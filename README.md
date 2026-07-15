@@ -36,41 +36,52 @@ Confirm kubectl sees it:
 kubectl add --help
 ```
 
-### Run
-
-Point it at a manifest and it applies server-side:
+Point it at a resource and it resolves the format and applies it server-side.
+Scope any of these to a namespace with `--namespace`, or undo with `--remove`:
 
 ```sh
-kubectl add https://scaffoldly.github.io/kubectl-add/yaml/nginx.yaml
+kubectl add <resource> --namespace demo
+kubectl add <resource> --remove
 ```
 
-It resolves and installs several formats:
+### YAML
+
+A URL to one or more manifests, applied as-is:
 
 ```sh
-# a kustomization (built server-side)
-kubectl add https://scaffoldly.github.io/kubectl-add/kustomization/kustomization.yaml
+kubectl add https://k8s.io/examples/application/deployment.yaml
+```
 
-# a helm chart served as loose files
+### Kustomize
+
+A kustomization, built server-side (relative resources, bases, and remote
+git/http references are all resolved):
+
+```sh
+kubectl add https://scaffoldly.github.io/kubectl-add/kustomization/kustomization.yaml
+```
+
+### Helm
+
+A chart served as loose files, a chart repository (its `index.yaml` is
+sniffed automatically), or a GitHub repo (defaults to the latest release and
+finds the chart):
+
+```sh
+# loose Chart.yaml files
 kubectl add https://scaffoldly.github.io/kubectl-add/helm/Chart.yaml
 
-# a helm chart repository (index.yaml is sniffed automatically)
+# a chart repository
 kubectl add https://metallb.github.io/metallb
 
 # pin the chart and version from a repository
 kubectl add "https://metallb.github.io/metallb?chart=metallb&version=0.16.1"
 
-# a GitHub repo (defaults to the latest release, finds the chart)
+# a GitHub repo
 kubectl add kubernetes/ingress-nginx
 ```
 
-Scope it to a namespace, or remove what you added:
-
-```sh
-kubectl add https://scaffoldly.github.io/kubectl-add/yaml/nginx.yaml --namespace demo
-kubectl add https://scaffoldly.github.io/kubectl-add/yaml/nginx.yaml --remove
-```
-
-For helm charts, stage the values for editing before installing:
+Stage a chart's values for editing before installing with `--prepare`:
 
 ```sh
 kubectl add https://metallb.github.io/metallb --prepare
@@ -123,5 +134,5 @@ kubectl add <resource> --debug     # -v=4, plus local debug logs
 
 ## Contributions
 
-This is an open source project. Contributions are welcome — please open an
-issue or pull request.
+This is open source software licensed under the [MIT License](LICENSE).
+Contributions are welcome — please open an issue or pull request.

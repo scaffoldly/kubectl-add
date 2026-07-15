@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 
 	"github.com/lmittmann/tint"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/remote"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/git"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/http"
+	resolvehttp "github.com/scaffoldly/kubectl-add/v1alpha1/resolve/http"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/image"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -37,6 +38,8 @@ type Add struct {
 	Debug bool
 	// Verbose enables kubectl -v=2. Debug wins when both are set.
 	Verbose bool
+	// Remove deletes the resolved resource instead of adding it.
+	Remove bool
 	// ConfigFlags supplies kubectl's standard connection flags.
 	ConfigFlags *genericclioptions.ConfigFlags
 	// RESTConfig is the cluster connection config.
@@ -54,7 +57,7 @@ func New() *Add {
 		Registry: resolve.New().
 			WithResolver(git.New()).
 			WithResolver(image.New()).
-			WithResolver(http.New()),
+			WithResolver(resolvehttp.New()),
 	}
 }
 
@@ -83,6 +86,8 @@ func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
 	a.WithDebug(debug)
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	a.WithVerbose(verbose)
+	remove, _ := cmd.Flags().GetBool("remove")
+	a.WithRemove(remove)
 	a.WithResource(args[0])
 
 	if a.ConfigFlags != nil {
@@ -168,6 +173,12 @@ func (a *Add) WithVerbose(verbose bool) *Add {
 	return a
 }
 
+// WithRemove selects delete instead of apply.
+func (a *Add) WithRemove(remove bool) *Add {
+	a.Remove = remove
+	return a
+}
+
 // WithNamespace sets the namespace, falling back to DefaultNamespace when empty.
 func (a *Add) WithNamespace(namespace string) *Add {
 	if namespace == "" {
@@ -217,29 +228,63 @@ func (a *Add) Run() error {
 	}
 
 	if a.Format != "yaml" {
-		// TODO: install helm charts and kustomizations
+		// TODO: render helm charts and kustomizations to yaml, then apply
 		return fmt.Errorf("resolved %s to %s (%s): installing %s is not implemented yet", a.Resource, manifest, a.Format, a.Format)
 	}
 
-	args := []string{"apply", "-f", manifest.String(), "--namespace", a.Namespace}
-	if a.Debug {
-		args = append(args, "-v=4")
-	} else if a.Verbose {
-		args = append(args, "-v=2")
-	}
-	if a.ConfigFlags != nil {
-		if context := *a.ConfigFlags.Context; context != "" {
-			args = append(args, "--context", context)
-		}
-		if kubeconfig := *a.ConfigFlags.KubeConfig; kubeconfig != "" {
-			args = append(args, "--kubeconfig", kubeconfig)
-		}
+	if a.RESTConfig == nil {
+		return fmt.Errorf("no REST config: provide WithConfigFlags")
 	}
 
-	slog.Info("applying", "url", manifest)
-	slog.Debug("running kubectl", "args", args)
-	apply := exec.Command("kubectl", args...)
-	apply.Stdout = os.Stdout
-	apply.Stderr = os.Stderr
-	return apply.Run()
+	ctx := context.Background()
+
+	slog.Info("fetching", "url", manifest)
+	body, err := a.fetch(ctx, manifest)
+	if err != nil {
+		return err
+	}
+
+	verbosity := 0
+	if a.Verbose {
+		verbosity = 2
+	}
+	if a.Debug {
+		verbosity = 4
+	}
+
+	action := "applying"
+	if a.Remove {
+		action = "removing"
+	}
+	slog.Info(action, "url", manifest)
+	return remote.New().
+		WithRESTConfig(a.RESTConfig).
+		WithNamespace(a.Namespace).
+		WithManifest(body).
+		WithVerbosity(verbosity).
+		WithRemove(a.Remove).
+		WithConfigFlags(a.ConfigFlags).
+		WithStreams(os.Stdout, os.Stderr).
+		Run(ctx)
+}
+
+// fetch downloads the manifest at u.
+func (a *Add) fetch(ctx context.Context, u *url.URL) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request for %s: %w", u, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching %s: %s", u, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", u, err)
+	}
+	return body, nil
 }

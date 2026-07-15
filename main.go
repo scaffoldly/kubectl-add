@@ -15,6 +15,7 @@ func main() {
 	rootCmd := add.New().WithConfigFlags(configFlags).IntoCobra()
 	rootCmd.PersistentFlags().Bool("debug", false, "enable debug output")
 	rootCmd.PersistentFlags().Bool("verbose", false, "enable verbose output")
+	rootCmd.Flags().Bool("remove", false, "remove the resource (kubectl delete) instead of adding it")
 	configFlags.AddFlags(rootCmd.PersistentFlags())
 
 	if err := rootCmd.Execute(); err != nil {

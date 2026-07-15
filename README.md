@@ -86,7 +86,7 @@ kubectl add https://kubernetes.github.io/ingress-nginx
 kubectl add "https://kubernetes.github.io/ingress-nginx?chart=ingress-nginx&version=4.15.1"
 
 # an OCI registry (latest tag, or pin with :tag or ?version=)
-kubectl add oci://registry-1.docker.io/bitnamicharts/nginx
+kubectl add oci://mirror.gcr.io/bitnamicharts/nginx
 
 # a GitHub repo
 kubectl add kubernetes/ingress-nginx

@@ -198,8 +198,8 @@ func TestExamples(t *testing.T) {
 		},
 		{
 			// A chart pulled from an OCI registry (latest tag resolved).
-			// Depends on Docker Hub; anonymous pulls are rate-limited.
-			url: "oci://registry-1.docker.io/bitnamicharts/nginx",
+			// mirror.gcr.io is Docker Hub's pull-through cache (no rate limit).
+			url: "oci://mirror.gcr.io/bitnamicharts/nginx",
 			verify: func(t *testing.T, wantExists bool) {
 				assertExists(t, wantExists, "deployment/nginx", func(ctx context.Context) error {
 					_, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "nginx", metav1.GetOptions{})

@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kubectl add — examples</title>
+<style>
+  body { font: 16px/1.6 system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; }
+  code { background: #f3f3f3; padding: .1em .35em; border-radius: 4px; }
+  pre { background: #f3f3f3; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  li { margin: .5rem 0; }
+</style>
+
+<h1>kubectl add — examples</h1>
+<p>Manifests served for <code>kubectl add</code>. Apply any of them server-side:</p>
+<pre>kubectl add https://scaffoldly.github.io/kubectl-add/nginx.yaml</pre>
+
+<h2>Available</h2>
+<ul>
+  <li><a href="nginx.yaml">nginx.yaml</a> — nginx Deployment + Service</li>
+  <li><a href="hello-configmap.yaml">hello-configmap.yaml</a> — a demo ConfigMap</li>
+</ul>
+
+<p>Remove any of them with <code>--remove</code>:</p>
+<pre>kubectl add --remove https://scaffoldly.github.io/kubectl-add/nginx.yaml</pre>

@@ -1,8 +1,5 @@
 # kubectl-add
 
-[![go](https://github.com/scaffoldly/kubectl-add/actions/workflows/pages.yml/badge.svg)](https://github.com/scaffoldly/kubectl-add/actions/workflows/pages.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/scaffoldly/kubectl-add)](https://goreportcard.com/report/github.com/scaffoldly/kubectl-add)
-
 `kubectl add` is a kubectl plugin that installs things into your cluster from
 whatever you point it at — a YAML URL, a kustomization, a helm chart, a helm
 chart repository, or a GitHub repo — and applies them **server-side**, so it

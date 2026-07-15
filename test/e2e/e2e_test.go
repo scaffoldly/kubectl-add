@@ -134,6 +134,17 @@ func TestExamples(t *testing.T) {
 				})
 			},
 		},
+		{
+			// Chart repository: sniff index.yaml, pick the chart's latest
+			// version, pull the packaged .tgz, render, apply.
+			url: "https://scaffoldly.github.io/kubectl-add/helm-repo",
+			verify: func(t *testing.T, wantExists bool) {
+				assertExists(t, wantExists, "configmap/hello-config", func(ctx context.Context) error {
+					_, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, "hello-config", metav1.GetOptions{})
+					return err
+				})
+			},
+		},
 	}
 
 	for _, tc := range cases {

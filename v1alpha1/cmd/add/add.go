@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
+	"strings"
 
 	"github.com/lmittmann/tint"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/helm"
@@ -292,7 +294,18 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 	}
 
 	slog.Info("discovering chart", "url", chartURL)
-	chart, err := helm.Discover(ctx, chartURL, a.get)
+	var chart *helm.Chart
+	switch {
+	case strings.HasSuffix(chartURL.Path, ".tgz"):
+		// A packaged chart, fetched and loaded directly.
+		chart, err = helm.DiscoverArchive(ctx, chartURL, a.get)
+	case path.Base(chartURL.Path) == "Chart.yaml" || path.Base(chartURL.Path) == "Chart.yml":
+		// Loose chart files served over HTTP, discovered by convention.
+		chart, err = helm.Discover(ctx, chartURL, a.get)
+	default:
+		// A chart repository, resolved through its index.yaml.
+		chart, err = helm.DiscoverRepo(ctx, chartURL, a.get)
+	}
 	if err != nil {
 		return err
 	}

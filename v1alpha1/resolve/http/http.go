@@ -2,10 +2,13 @@ package http
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/helm"
@@ -17,10 +20,14 @@ import (
 // http(s) and sniffs their content to determine the artifact format. It is
 // the fallback transport: anything it can't identify is treated as a yaml
 // manifest.
-type Resolver struct{}
+type Resolver struct {
+	client *http.Client
+}
 
 func New() *Resolver {
-	return &Resolver{}
+	return &Resolver{
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
 }
 
 func (r *Resolver) Name() string {
@@ -54,21 +61,35 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 		return helm.Resolution(r.Name(), u), nil
 	}
 
-	// TODO: ContentType sniff for chart repos (index.yaml) before falling
-	// back to yaml.
+	// An extension-less URL may be a helm chart repository; probe its
+	// index.yaml before assuming a plain manifest.
+	if path.Ext(strings.TrimSuffix(u.Path, "/")) == "" && r.isChartRepo(u) {
+		slog.Debug("sniffed helm chart repo", "url", u)
+		return helm.Resolution(r.Name(), u), nil
+	}
+
 	slog.Debug("falling back to yaml manifest", "url", u)
 	return yaml.Resolution(r.Name(), u), nil
 }
 
-// ContentType sniffs the resource's content type (HEAD request), for
-// format detection (yaml manifest, chart tarball, helm repo index).
-func (r *Resolver) ContentType(resource string) (string, error) {
-	// TODO: HEAD the URL and return Content-Type
-	return "", fmt.Errorf("http resolver: ContentType not implemented")
-}
+// isChartRepo reports whether the URL hosts a helm chart repository, by
+// fetching its index.yaml and checking for the repository's entries map.
+func (r *Resolver) isChartRepo(u *url.URL) bool {
+	index := *u
+	index.Path = strings.TrimSuffix(u.Path, "/") + "/index.yaml"
 
-// Get fetches the resource's content.
-func (r *Resolver) Get(resource string) ([]byte, error) {
-	// TODO: GET the URL
-	return nil, fmt.Errorf("http resolver: Get not implemented")
+	resp, err := r.client.Get(index.String())
+	if err != nil {
+		slog.Debug("chart repo probe failed", "url", &index, "err", err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	// index.yaml is a YAML document keyed by apiVersion and entries; a light
+	// content check avoids pulling the whole (potentially large) index.
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return strings.Contains(string(head), "entries:")
 }

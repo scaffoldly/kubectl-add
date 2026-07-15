@@ -109,6 +109,10 @@ func TestExamples(t *testing.T) {
 					_, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, "hello", metav1.GetOptions{})
 					return err
 				})
+				assertExists(t, wantExists, "secret/hello-secret", func(ctx context.Context) error {
+					_, err := clientset.CoreV1().Secrets(namespace).Get(ctx, "hello-secret", metav1.GetOptions{})
+					return err
+				})
 			},
 		},
 		{

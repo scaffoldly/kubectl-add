@@ -69,19 +69,16 @@ A kustomization, built server-side (relative resources, bases, and remote
 git/http references are all resolved):
 
 ```sh
-kubectl add https://scaffoldly.github.io/kubectl-add/kustomization/kustomization.yaml
+kubectl add https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/examples/helloWorld/kustomization.yaml
 ```
 
 ### Helm
 
-A chart served as loose files, a chart repository (its `index.yaml` is
-sniffed automatically), or a GitHub repo (defaults to the latest release and
-finds the chart):
+A chart repository (its `index.yaml` is sniffed automatically), a GitHub repo
+(defaults to the latest release and finds the chart), or a chart served as
+loose `Chart.yaml` files over HTTP:
 
 ```sh
-# loose Chart.yaml files
-kubectl add https://scaffoldly.github.io/kubectl-add/helm/Chart.yaml
-
 # a chart repository (picks the chart, latest version)
 kubectl add https://kubernetes.github.io/ingress-nginx
 
@@ -165,7 +162,7 @@ kubectl add <resource> --debug     # -v=4, plus local debug logs
 
 ## Docs
 
-- Live examples: <https://scaffoldly.github.io/kubectl-add/>
+- Examples: [`test/e2e`](test/e2e) in this repo
 - Issues: <https://github.com/scaffoldly/kubectl-add/issues>
 
 ## Contributions

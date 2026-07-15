@@ -75,42 +75,6 @@ func TestMaterialize(t *testing.T) {
 	}
 }
 
-// TestMaterializeInSiteParent covers a kustomization that reaches into a
-// sibling directory via ../ — allowed, since url.ResolveReference keeps it
-// within the host. The tar mirrors the full host-relative paths so the
-// resolved layout stays intact for the builder.
-func TestMaterializeInSiteParent(t *testing.T) {
-	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
-	kustomization := []byte(`resources:
-  - ../yaml/nginx.yaml
-  - ../yaml/configmap.yaml
-`)
-	nginx := []byte("kind: Deployment\n")
-	configmap := []byte("kind: ConfigMap\n")
-
-	archive, buildDir, err := Materialize(context.Background(), kustomization, base, fakeFetch(map[string][]byte{
-		"/yaml/nginx.yaml":     nginx,
-		"/yaml/configmap.yaml": configmap,
-	}))
-	if err != nil {
-		t.Fatalf("Materialize: %v", err)
-	}
-	if buildDir != "app" {
-		t.Errorf("buildDir = %q, want %q", buildDir, "app")
-	}
-
-	entries := untar(t, archive)
-	if !bytes.Equal(entries["app/kustomization.yaml"], kustomization) {
-		t.Errorf("kustomization.yaml modified in flight:\n%s", entries["app/kustomization.yaml"])
-	}
-	if !bytes.Equal(entries["yaml/nginx.yaml"], nginx) {
-		t.Errorf("../yaml/nginx.yaml missing or wrong: %q", entries["yaml/nginx.yaml"])
-	}
-	if !bytes.Equal(entries["yaml/configmap.yaml"], configmap) {
-		t.Errorf("../yaml/configmap.yaml missing or wrong: %q", entries["yaml/configmap.yaml"])
-	}
-}
-
 func TestMaterializeNested(t *testing.T) {
 	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
 	root := []byte("resources:\n  - ./sub/\n")

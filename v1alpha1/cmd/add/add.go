@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/lmittmann/tint"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/kustomize"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/remote"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/git"
@@ -227,11 +228,6 @@ func (a *Add) Run() error {
 		return a.err
 	}
 
-	if a.Format != "yaml" {
-		// TODO: render helm charts and kustomizations to yaml, then apply
-		return fmt.Errorf("resolved %s to %s (%s): installing %s is not implemented yet", a.Resource, manifest, a.Format, a.Format)
-	}
-
 	if a.RESTConfig == nil {
 		return fmt.Errorf("no REST config: provide WithConfigFlags")
 	}
@@ -242,6 +238,20 @@ func (a *Add) Run() error {
 	body, err := a.fetch(ctx, manifest)
 	if err != nil {
 		return err
+	}
+
+	switch a.Format {
+	case "yaml":
+		// Ready to apply as-is.
+	case "kustomize":
+		slog.Info("building kustomization", "url", manifest)
+		body, err = kustomize.Build(body)
+		if err != nil {
+			return err
+		}
+	default:
+		// TODO: render helm charts to yaml, then apply
+		return fmt.Errorf("resolved %s to %s (%s): installing %s is not implemented yet", a.Resource, manifest, a.Format, a.Format)
 	}
 
 	verbosity := 0

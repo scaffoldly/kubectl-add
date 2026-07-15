@@ -95,6 +95,23 @@ func TestExamples(t *testing.T) {
 				})
 			},
 		},
+		{
+			url: "https://scaffoldly.github.io/kubectl-add/kustomization.yaml",
+			verify: func(t *testing.T, wantExists bool) {
+				assertExists(t, wantExists, "deployment/nginx", func(ctx context.Context) error {
+					_, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "nginx", metav1.GetOptions{})
+					return err
+				})
+				assertExists(t, wantExists, "service/nginx", func(ctx context.Context) error {
+					_, err := clientset.CoreV1().Services(namespace).Get(ctx, "nginx", metav1.GetOptions{})
+					return err
+				})
+				assertExists(t, wantExists, "configmap/hello", func(ctx context.Context) error {
+					_, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, "hello", metav1.GetOptions{})
+					return err
+				})
+			},
+		},
 	}
 
 	for _, tc := range cases {

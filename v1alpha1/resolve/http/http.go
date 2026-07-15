@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/helm"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/kustomize"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/yaml"
 )
 
@@ -43,8 +45,13 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 		return helm.Resolution(r.Name(), u), nil
 	}
 
-	// TODO: ContentType sniff for chart repos (index.yaml) and
-	// kustomization dirs before falling back to yaml.
+	if base := path.Base(u.Path); base == "kustomization.yaml" || base == "kustomization.yml" || base == "Kustomization" {
+		slog.Debug("sniffed kustomization", "url", u)
+		return kustomize.Resolution(r.Name(), u), nil
+	}
+
+	// TODO: ContentType sniff for chart repos (index.yaml) before falling
+	// back to yaml.
 	slog.Debug("falling back to yaml manifest", "url", u)
 	return yaml.Resolution(r.Name(), u), nil
 }

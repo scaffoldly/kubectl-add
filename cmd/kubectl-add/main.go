@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/scaffoldly/kubectl-add/v1alpha1/cmd/add"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -19,7 +22,12 @@ func main() {
 	rootCmd.Flags().Bool("no-edit", false, "skip the interactive edit of an install's editable inputs (e.g. helm values)")
 	configFlags.AddFlags(rootCmd.PersistentFlags())
 
-	if err := rootCmd.Execute(); err != nil {
+	// Cancel the run on interrupt/termination; WithCobra threads this into
+	// the builder via cmd.Context().
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}
 }

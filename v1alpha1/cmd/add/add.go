@@ -95,6 +95,7 @@ func (a *Add) IntoCobra() *cobra.Command {
 // config and namespace resolved from ConfigFlags. Runs at execute time, so
 // flag values are populated.
 func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
+	a.WithContext(cmd.Context())
 	debug, _ := cmd.Flags().GetBool("debug")
 	a.WithDebug(debug)
 	verbose, _ := cmd.Flags().GetBool("verbose")

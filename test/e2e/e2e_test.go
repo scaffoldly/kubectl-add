@@ -1,12 +1,11 @@
 //go:build e2e
 
 // Package e2e drives the built kubectl-add binary against a live cluster,
-// applying and removing the repo's examples straight from the published
-// GitHub Pages site and verifying the results with client-go.
+// applying and removing the repo's e2e manifests straight from the
+// published GitHub Pages site and verifying the results with client-go.
 //
 // Run with: make test-e2e  (or: go test -tags e2e ./test/e2e/ -v -timeout 15m)
-// Requires a reachable cluster via the standard kubeconfig. Override the
-// examples base URL with KUBECTL_ADD_EXAMPLES_BASE.
+// Requires a reachable cluster via the standard kubeconfig.
 package e2e
 
 import (

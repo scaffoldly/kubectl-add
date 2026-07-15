@@ -17,11 +17,16 @@ import (
 )
 
 // DiscoverRepo resolves a chart from a helm chart repository. It fetches the
-// repo's index.yaml, selects a chart (preferring one named after the repo's
-// last path segment, else the sole entry), takes its latest version, and
-// loads that packaged chart.
+// repo's index.yaml, selects a chart, picks a version, and loads that
+// packaged chart. The ?chart= and ?version= query params pin the chart and
+// version; otherwise the chart is inferred (the entry named after the repo's
+// last path segment, else the sole entry) and the newest version is used.
 func DiscoverRepo(ctx context.Context, repoURL *url.URL, fetch Fetch) (*Chart, error) {
+	q := repoURL.Query()
+	wantChart, wantVersion := q.Get("chart"), q.Get("version")
+
 	index := *repoURL
+	index.RawQuery = ""
 	index.Path = strings.TrimSuffix(repoURL.Path, "/") + "/index.yaml"
 
 	data, found, err := fetch(ctx, &index)
@@ -38,26 +43,24 @@ func DiscoverRepo(ctx context.Context, repoURL *url.URL, fetch Fetch) (*Chart, e
 	}
 	idx.SortEntries()
 
-	name, err := chooseChart(&idx, repoURL)
+	name, err := chooseChart(&idx, repoURL, wantChart)
 	if err != nil {
 		return nil, err
 	}
 
-	versions := idx.Entries[name]
-	if len(versions) == 0 {
-		return nil, fmt.Errorf("helm: chart %q has no versions in %s", name, &index)
-	}
-	// SortEntries orders each chart's versions newest-first.
-	latest := versions[0]
-	if len(latest.URLs) == 0 {
-		return nil, fmt.Errorf("helm: chart %s-%s has no download URL", name, latest.Version)
-	}
-
-	tgz, err := chartURL(repoURL, latest.URLs[0])
+	version, err := selectVersion(idx.Entries[name], name, wantVersion)
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("selected chart from repo", "chart", name, "version", latest.Version, "url", tgz)
+	if len(version.URLs) == 0 {
+		return nil, fmt.Errorf("helm: chart %s-%s has no download URL", name, version.Version)
+	}
+
+	tgz, err := chartURL(repoURL, version.URLs[0])
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("selected chart from repo", "chart", name, "version", version.Version, "url", tgz)
 	return DiscoverArchive(ctx, tgz, fetch)
 }
 
@@ -78,13 +81,21 @@ func DiscoverArchive(ctx context.Context, u *url.URL, fetch Fetch) (*Chart, erro
 	return &Chart{Chart: ch, DefaultValues: rawValues(ch)}, nil
 }
 
-// chooseChart picks which chart to install from a repo index: the one named
-// after the repo's last path segment if present, otherwise the sole entry.
-// A multi-chart repo with no name match is ambiguous.
-func chooseChart(idx *repo.IndexFile, repoURL *url.URL) (string, error) {
-	want := path.Base(strings.TrimSuffix(repoURL.Path, "/"))
-	if _, ok := idx.Entries[want]; ok {
-		return want, nil
+// chooseChart picks which chart to install from a repo index. An explicit
+// name (from ?chart=) wins; otherwise the entry named after the repo's last
+// path segment if present, otherwise the sole entry. A multi-chart repo with
+// no name match is ambiguous.
+func chooseChart(idx *repo.IndexFile, repoURL *url.URL, want string) (string, error) {
+	if want != "" {
+		if _, ok := idx.Entries[want]; ok {
+			return want, nil
+		}
+		return "", fmt.Errorf("helm: chart %q not found in repo %s", want, repoURL)
+	}
+
+	base := path.Base(strings.TrimSuffix(repoURL.Path, "/"))
+	if _, ok := idx.Entries[base]; ok {
+		return base, nil
 	}
 	if len(idx.Entries) == 1 {
 		for name := range idx.Entries {
@@ -97,7 +108,24 @@ func chooseChart(idx *repo.IndexFile, repoURL *url.URL) (string, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return "", fmt.Errorf("helm: repo %s has multiple charts %v; reference one by name", repoURL, names)
+	return "", fmt.Errorf("helm: repo %s has multiple charts %v; select one with ?chart=", repoURL, names)
+}
+
+// selectVersion picks a chart version: the requested one (from ?version=) or,
+// when unspecified, the newest (entries are sorted newest-first).
+func selectVersion(versions repo.ChartVersions, name, want string) (*repo.ChartVersion, error) {
+	if len(versions) == 0 {
+		return nil, fmt.Errorf("helm: chart %q has no versions", name)
+	}
+	if want == "" {
+		return versions[0], nil
+	}
+	for _, v := range versions {
+		if v.Version == want {
+			return v, nil
+		}
+	}
+	return nil, fmt.Errorf("helm: chart %s has no version %q", name, want)
 }
 
 // chartURL resolves an index entry's download URL, which may be absolute or
@@ -113,6 +141,7 @@ func chartURL(repoURL *url.URL, ref string) (*url.URL, error) {
 	// Relative URLs are relative to the repo root (with a trailing slash so
 	// the last path segment is treated as a directory).
 	base := *repoURL
+	base.RawQuery = ""
 	base.Path = strings.TrimSuffix(repoURL.Path, "/") + "/"
 	return base.ResolveReference(u), nil
 }

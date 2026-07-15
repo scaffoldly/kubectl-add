@@ -76,6 +76,7 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 // fetching its index.yaml and checking for the repository's entries map.
 func (r *Resolver) isChartRepo(u *url.URL) bool {
 	index := *u
+	index.RawQuery = ""
 	index.Path = strings.TrimSuffix(u.Path, "/") + "/index.yaml"
 
 	resp, err := r.client.Get(index.String())

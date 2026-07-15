@@ -93,11 +93,11 @@ kubectl add https://metallb.github.io/metallb
 
 What `kubectl add` can resolve and install, by source and format:
 
-| Source | YAML | Kustomize | Helm |
-| --- | --- | --- | --- |
-| HTTP(S) URL | ✅ | ✅ | ✅ &nbsp;loose `Chart.yaml`, repo `index.yaml` |
+| Source                                                 | YAML    | Kustomize                          | Helm                                                 |
+| ------------------------------------------------------ | ------- | ---------------------------------- | ---------------------------------------------------- |
+| HTTP(S) URL                                            | ✅      | ✅                                 | ✅ &nbsp;loose `Chart.yaml`, repo `index.yaml`       |
 | GitHub repo &nbsp;(`org/repo`, `.git`, `github.com/…`) | 🚧 [#3] | ✅ &nbsp;root `kustomization.yaml` | ✅ &nbsp;chart under `charts/` at the latest release |
-| OCI &nbsp;(`oci://`) | — | — | 🚧 [#4] |
+| OCI &nbsp;(`oci://`)                                   | —       | —                                  | 🚧 [#4]                                              |
 
 ✅ supported &nbsp;·&nbsp; 🚧 planned &nbsp;·&nbsp; — n/a
 

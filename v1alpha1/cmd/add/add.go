@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/lmittmann/tint"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/helm"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/kustomize"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/remote"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
@@ -19,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
@@ -40,6 +42,9 @@ type Add struct {
 	Verbose bool
 	// Remove deletes the resolved resource instead of adding it.
 	Remove bool
+	// Prepare stages a format's editable inputs (e.g. helm values) as a
+	// ConfigMap for review before install, without installing.
+	Prepare bool
 	// ConfigFlags supplies kubectl's standard connection flags.
 	ConfigFlags *genericclioptions.ConfigFlags
 	// RESTConfig is the cluster connection config.
@@ -88,6 +93,8 @@ func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
 	a.WithVerbose(verbose)
 	remove, _ := cmd.Flags().GetBool("remove")
 	a.WithRemove(remove)
+	prepare, _ := cmd.Flags().GetBool("prepare")
+	a.WithPrepare(prepare)
 	a.WithResource(args[0])
 
 	if a.ConfigFlags != nil {
@@ -179,6 +186,13 @@ func (a *Add) WithRemove(remove bool) *Add {
 	return a
 }
 
+// WithPrepare stages a format's editable inputs for review without
+// installing.
+func (a *Add) WithPrepare(prepare bool) *Add {
+	a.Prepare = prepare
+	return a
+}
+
 // WithNamespace sets the namespace, falling back to DefaultNamespace when empty.
 func (a *Add) WithNamespace(namespace string) *Add {
 	if namespace == "" {
@@ -233,6 +247,16 @@ func (a *Add) Run() error {
 
 	ctx := context.Background()
 
+	// A helm chart is discovered, rendered, and (optionally) has its
+	// values staged — a flow distinct from fetching a single manifest.
+	if a.Format == resolve.FormatHelm {
+		return a.installHelm(ctx, manifest)
+	}
+
+	if a.Prepare {
+		return fmt.Errorf("--prepare is not supported for %s", a.Format)
+	}
+
 	slog.Info("fetching", "url", manifest)
 	body, err := a.fetch(ctx, manifest)
 	if err != nil {
@@ -251,10 +275,69 @@ func (a *Add) Run() error {
 			return err
 		}
 	default:
-		// TODO: render helm charts to yaml, then apply
 		return fmt.Errorf("resolved %s to %s (%s): installing %s is not implemented yet", a.Resource, manifest, a.Format, a.Format)
 	}
 
+	return a.apply(ctx, manifest, body, a.Format)
+}
+
+// installHelm discovers the chart, renders it with persisted or default
+// values, and applies the result — or, with --prepare, only stages the
+// values for editing.
+func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
+	client, err := kubernetes.NewForConfig(a.RESTConfig)
+	if err != nil {
+		return fmt.Errorf("building clientset: %w", err)
+	}
+
+	slog.Info("discovering chart", "url", chartURL)
+	chart, err := helm.Discover(ctx, chartURL, a.get)
+	if err != nil {
+		return err
+	}
+
+	valuesName := helm.ValuesName(chartURL.String())
+
+	if a.Prepare {
+		if _, exists, err := helm.LoadValues(ctx, client, a.Namespace, valuesName); err != nil {
+			return err
+		} else if !exists {
+			if err := helm.StoreValues(ctx, client, a.Namespace, valuesName, chart.DefaultValues); err != nil {
+				return err
+			}
+		}
+		slog.Info("staged values", "configmap", valuesName, "namespace", a.Namespace)
+		slog.Info(fmt.Sprintf("edit with: kubectl edit configmap %s -n %s", valuesName, a.Namespace))
+		return nil
+	}
+
+	values, exists, err := helm.LoadValues(ctx, client, a.Namespace, valuesName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		values = chart.DefaultValues
+		if err := helm.StoreValues(ctx, client, a.Namespace, valuesName, values); err != nil {
+			return err
+		}
+		slog.Debug("persisted default values", "configmap", valuesName)
+	} else {
+		slog.Info("using persisted values", "configmap", valuesName)
+	}
+
+	release := helm.ReleaseName(chart.Chart)
+	slog.Info("rendering chart", "release", release)
+	rendered, err := helm.Render(chart.Chart, values, release, a.Namespace)
+	if err != nil {
+		return err
+	}
+
+	// The chart is rendered to plain yaml; apply it like any manifest.
+	return a.apply(ctx, chartURL, rendered, resolve.FormatYAML)
+}
+
+// apply streams the manifest to the server-side applier.
+func (a *Add) apply(ctx context.Context, source *url.URL, body []byte, format resolve.Format) error {
 	verbosity := 0
 	if a.Verbose {
 		verbosity = 2
@@ -267,12 +350,12 @@ func (a *Add) Run() error {
 	if a.Remove {
 		action = "removing"
 	}
-	slog.Info(action, "url", manifest)
+	slog.Info(action, "url", source)
 	return remote.New().
 		WithRESTConfig(a.RESTConfig).
 		WithNamespace(a.Namespace).
 		WithManifest(body).
-		WithFormat(a.Format).
+		WithFormat(format).
 		WithVerbosity(verbosity).
 		WithRemove(a.Remove).
 		WithConfigFlags(a.ConfigFlags).
@@ -283,9 +366,22 @@ func (a *Add) Run() error {
 // maxRedirects bounds the redirect chain when fetching a manifest.
 const maxRedirects = 10
 
-// fetch downloads the manifest at u, following redirects (e.g. k8s.io
-// short links to raw content) up to maxRedirects hops.
+// fetch downloads the resource at u, erroring if it is absent.
 func (a *Add) fetch(ctx context.Context, u *url.URL) ([]byte, error) {
+	body, found, err := a.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("fetching %s: not found", u)
+	}
+	return body, nil
+}
+
+// get downloads the resource at u, following redirects (e.g. k8s.io short
+// links to raw content) up to maxRedirects hops. A 404 is reported as
+// found=false rather than an error, so callers can probe optional files.
+func (a *Add) get(ctx context.Context, u *url.URL) ([]byte, bool, error) {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			slog.Debug("following redirect", "from", via[len(via)-1].URL, "to", req.URL, "hop", len(via))
@@ -298,19 +394,22 @@ func (a *Add) fetch(ctx context.Context, u *url.URL) ([]byte, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("building request for %s: %w", u, err)
+		return nil, false, fmt.Errorf("building request for %s: %w", u, err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching %s: %w", u, err)
+		return nil, false, fmt.Errorf("fetching %s: %w", u, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching %s: %s", u, resp.Status)
+		return nil, false, fmt.Errorf("fetching %s: %s", u, resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", u, err)
+		return nil, false, fmt.Errorf("reading %s: %w", u, err)
 	}
-	return body, nil
+	return body, true, nil
 }

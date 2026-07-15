@@ -16,6 +16,7 @@ func main() {
 	rootCmd.PersistentFlags().Bool("debug", false, "enable debug output")
 	rootCmd.PersistentFlags().Bool("verbose", false, "enable verbose output")
 	rootCmd.Flags().Bool("remove", false, "remove the resource (kubectl delete) instead of adding it")
+	rootCmd.Flags().Bool("prepare", false, "stage a format's editable inputs (e.g. helm values) as a ConfigMap for review, without installing")
 	configFlags.AddFlags(rootCmd.PersistentFlags())
 
 	if err := rootCmd.Execute(); err != nil {

@@ -45,9 +45,13 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 		return helm.Resolution(r.Name(), u), nil
 	}
 
-	if base := path.Base(u.Path); base == "kustomization.yaml" || base == "kustomization.yml" || base == "Kustomization" {
+	switch path.Base(u.Path) {
+	case "kustomization.yaml", "kustomization.yml", "Kustomization":
 		slog.Debug("sniffed kustomization", "url", u)
 		return kustomize.Resolution(r.Name(), u), nil
+	case "Chart.yaml", "Chart.yml":
+		slog.Debug("sniffed helm chart", "url", u)
+		return helm.Resolution(r.Name(), u), nil
 	}
 
 	// TODO: ContentType sniff for chart repos (index.yaml) before falling

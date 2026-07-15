@@ -17,15 +17,10 @@ cluster.
 
 ### Setup
 
-Install with [Krew](https://krew.sigs.k8s.io/):
+<!-- TODO(krew): once merged into the krew-index, document install via Krew:
+     kubectl krew install add — see https://github.com/scaffoldly/kubectl-add/issues/2 -->
 
-```sh
-kubectl krew install add
-```
-
-<!-- TODO: not yet published to the krew-index; the line above is the target. -->
-
-Or grab a binary from [GitHub Releases](https://github.com/scaffoldly/kubectl-add/releases).
+Grab a binary from [GitHub Releases](https://github.com/scaffoldly/kubectl-add/releases).
 
 Or build from source:
 

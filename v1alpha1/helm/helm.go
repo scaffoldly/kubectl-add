@@ -93,8 +93,10 @@ func Discover(ctx context.Context, chartURL *url.URL, fetch Fetch) (*Chart, erro
 }
 
 // Render templates the chart with the given values into a multi-document
-// YAML manifest, client-side (no cluster access).
-func Render(ch *chart.Chart, values []byte, release, namespace string) ([]byte, error) {
+// YAML manifest, client-side (no cluster access). kubeVersion is the target
+// cluster's version (e.g. "v1.30.1"), used for the chart's kubeVersion
+// constraint and .Capabilities; empty falls back to the helm default.
+func Render(ch *chart.Chart, values []byte, release, namespace, kubeVersion string) ([]byte, error) {
 	vals, err := chartutil.ReadValues(values)
 	if err != nil {
 		return nil, fmt.Errorf("helm: parsing values: %w", err)
@@ -106,6 +108,13 @@ func Render(ch *chart.Chart, values []byte, release, namespace string) ([]byte, 
 	inst.ClientOnly = true
 	inst.ReleaseName = release
 	inst.Namespace = namespace
+	if kubeVersion != "" {
+		kv, err := chartutil.ParseKubeVersion(kubeVersion)
+		if err != nil {
+			return nil, fmt.Errorf("helm: parsing kube version %q: %w", kubeVersion, err)
+		}
+		inst.KubeVersion = kv
+	}
 
 	rel, err := inst.Run(ch, vals.AsMap())
 	if err != nil {

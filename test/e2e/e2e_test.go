@@ -156,6 +156,46 @@ func TestExamples(t *testing.T) {
 				})
 			},
 		},
+		// The cases below mirror the README examples against real,
+		// external sources.
+		{
+			// Plain YAML from the k8s.io docs.
+			url: "https://k8s.io/examples/application/deployment.yaml",
+			verify: func(t *testing.T, wantExists bool) {
+				assertExists(t, wantExists, "deployment/nginx-deployment", func(ctx context.Context) error {
+					_, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "nginx-deployment", metav1.GetOptions{})
+					return err
+				})
+			},
+		},
+		{
+			// The kustomize helloWorld example (relative resources).
+			url: "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/examples/helloWorld/kustomization.yaml",
+			verify: func(t *testing.T, wantExists bool) {
+				assertExists(t, wantExists, "deployment/the-deployment", func(ctx context.Context) error {
+					_, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "the-deployment", metav1.GetOptions{})
+					return err
+				})
+				assertExists(t, wantExists, "service/the-service", func(ctx context.Context) error {
+					_, err := clientset.CoreV1().Services(namespace).Get(ctx, "the-service", metav1.GetOptions{})
+					return err
+				})
+				assertExists(t, wantExists, "configmap/the-map", func(ctx context.Context) error {
+					_, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, "the-map", metav1.GetOptions{})
+					return err
+				})
+			},
+		},
+		{
+			// The ingress-nginx chart from its HTTP repository, pinned.
+			url: "https://kubernetes.github.io/ingress-nginx?chart=ingress-nginx&version=4.15.1",
+			verify: func(t *testing.T, wantExists bool) {
+				assertExists(t, wantExists, "deployment/ingress-nginx-controller", func(ctx context.Context) error {
+					_, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "ingress-nginx-controller", metav1.GetOptions{})
+					return err
+				})
+			},
+		},
 	}
 
 	for _, tc := range cases {

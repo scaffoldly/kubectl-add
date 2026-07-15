@@ -339,9 +339,19 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 		slog.Info("using persisted values", "configmap", valuesName)
 	}
 
+	// Render against the target cluster's version so charts with a
+	// kubeVersion constraint (and version-gated templates) resolve
+	// correctly, rather than helm's stale client-only default.
+	kubeVersion := ""
+	if sv, err := client.Discovery().ServerVersion(); err != nil {
+		slog.Debug("could not determine cluster version; using helm default", "err", err)
+	} else {
+		kubeVersion = sv.GitVersion
+	}
+
 	release := helm.ReleaseName(chart.Chart)
-	slog.Info("rendering chart", "release", release)
-	rendered, err := helm.Render(chart.Chart, values, release, a.Namespace)
+	slog.Info("rendering chart", "release", release, "kubeVersion", kubeVersion)
+	rendered, err := helm.Render(chart.Chart, values, release, a.Namespace, kubeVersion)
 	if err != nil {
 		return err
 	}

@@ -7,7 +7,8 @@ on:
       - main
     paths:
       - .github/workflows/release.yaml
-      - main.go
+      - cmd/**
+      - lib.go
       - v1alpha1/**
       - go.*
     tags:
@@ -17,7 +18,8 @@ on:
       - main
     paths:
       - .github/workflows/release.yaml
-      - main.go
+      - cmd/**
+      - lib.go
       - v1alpha1/**
       - go.*
 
@@ -76,7 +78,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - run: go build -ldflags "-X main.version=$GITHUB_SHA"
+      - run: go build -ldflags "-X main.version=$GITHUB_SHA" ./cmd/kubectl-add
       - uses: int128/go-release-action@9e1d6ec29fc6ffc2ba55f631baf4a73017d228e1 # v2.5.0
         with:
           binary: kubectl-add

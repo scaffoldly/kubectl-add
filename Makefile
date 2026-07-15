@@ -1,13 +1,14 @@
 BINARY := kubectl-add
 INSTALL_DIR := $(HOME)/.local/bin
+CMD := ./cmd/kubectl-add
 
 .PHONY: build install test test-e2e clean
 
 build:
-	go build -o $(BINARY) .
+	go build -o $(BINARY) $(CMD)
 
 install:
-	go build -o $(INSTALL_DIR)/$(BINARY) .
+	go build -o $(INSTALL_DIR)/$(BINARY) $(CMD)
 
 test:
 	go test ./...

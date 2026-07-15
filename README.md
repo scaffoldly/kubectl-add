@@ -102,6 +102,23 @@ kubectl add https://kubernetes.github.io/ingress-nginx --no-edit  # installs wit
 
 The edit is skipped automatically when stdin is not a terminal (scripts, CI).
 
+## Use as a library
+
+The same fluent builder is importable from the module root:
+
+```go
+import "github.com/scaffoldly/kubectl-add"
+
+err := kubectladd.New().
+    WithResource("https://github.com/some/repo").
+    WithNamespace("my-namespace").
+    Run()
+```
+
+The connection is inferred from your kubeconfig, or supply one explicitly with
+`WithRESTConfig(cfg)`. Pass a `context.Context` for cancellation/deadlines with
+`WithContext(ctx)`.
+
 ## Compatibility
 
 What `kubectl add` can resolve and install, by source and format:

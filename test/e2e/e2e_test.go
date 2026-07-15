@@ -48,7 +48,7 @@ func run(m *testing.M) int {
 	defer os.RemoveAll(dir)
 
 	binPath = filepath.Join(dir, "kubectl-add")
-	build := exec.Command("go", "build", "-o", binPath, ".")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/kubectl-add")
 	build.Dir = root
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {

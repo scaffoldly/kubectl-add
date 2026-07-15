@@ -51,8 +51,12 @@ type Add struct {
 	NoEdit bool
 	// ConfigFlags supplies kubectl's standard connection flags.
 	ConfigFlags *genericclioptions.ConfigFlags
-	// RESTConfig is the cluster connection config.
+	// RESTConfig is the cluster connection config. When unset, Run infers it
+	// from the kubeconfig.
 	RESTConfig *rest.Config
+	// Context carries cancellation/deadline into Run; defaults to
+	// context.Background when unset.
+	Context context.Context
 	// Registry resolves Resource into an installable artifact.
 	Registry *resolve.Registry
 
@@ -210,8 +214,16 @@ func (a *Add) WithConfigFlags(flags *genericclioptions.ConfigFlags) *Add {
 	return a
 }
 
+// WithRESTConfig sets the cluster connection config. Optional: when unset,
+// Run infers it from the kubeconfig.
 func (a *Add) WithRESTConfig(config *rest.Config) *Add {
 	a.RESTConfig = config
+	return a
+}
+
+// WithContext sets the context carrying cancellation and deadlines into Run.
+func (a *Add) WithContext(ctx context.Context) *Add {
+	a.Context = ctx
 	return a
 }
 
@@ -244,11 +256,30 @@ func (a *Add) Run() error {
 		return a.err
 	}
 
+	// Infer the connection from the kubeconfig when none was provided, so
+	// WithRESTConfig is optional for library callers.
 	if a.RESTConfig == nil {
-		return fmt.Errorf("no REST config: provide WithConfigFlags")
+		flags := a.ConfigFlags
+		if flags == nil {
+			flags = genericclioptions.NewConfigFlags(true)
+			a.ConfigFlags = flags
+		}
+		config, err := flags.ToRESTConfig()
+		if err != nil {
+			return fmt.Errorf("inferring REST config from kubeconfig: %w", err)
+		}
+		a.RESTConfig = config
+		if a.Namespace == "" {
+			if ns, _, err := flags.ToRawKubeConfigLoader().Namespace(); err == nil {
+				a.WithNamespace(ns)
+			}
+		}
 	}
 
-	ctx := context.Background()
+	ctx := a.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	// A helm chart is discovered, rendered, and (optionally) has its
 	// values staged — a flow distinct from fetching a single manifest.

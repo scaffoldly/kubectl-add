@@ -1,0 +1,82 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/release.yaml
+      - main.go
+      - v1alpha1/**
+      - go.*
+    tags:
+      - v*
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/release.yaml
+      - main.go
+      - v1alpha1/**
+      - go.*
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}--${{ github.ref }}
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      draft-release-name: ${{ steps.create-draft-release.outputs.draft-release-name }}
+    permissions:
+      contents: write
+    steps:
+      - if: github.event_name == 'push'
+        id: create-draft-release
+        uses: int128/go-release-action/create-draft-release@9e1d6ec29fc6ffc2ba55f631baf4a73017d228e1 # v2.5.0
+
+  build:
+    needs: create
+    strategy:
+      matrix:
+        platform:
+          - runs-on: ubuntu-latest
+            GOOS: linux
+            GOARCH: amd64
+          - runs-on: ubuntu-latest
+            GOOS: linux
+            GOARCH: arm64
+          - runs-on: ubuntu-latest
+            GOOS: linux
+            GOARCH: arm
+          - runs-on: macos-latest
+            GOOS: darwin
+            GOARCH: amd64
+          - runs-on: macos-latest
+            GOOS: darwin
+            GOARCH: arm64
+          - runs-on: windows-latest
+            GOOS: windows
+            GOARCH: amd64
+          - runs-on: windows-latest
+            GOOS: windows
+            GOARCH: arm64
+    runs-on: ${{ matrix.platform.runs-on }}
+    env:
+      GOOS: ${{ matrix.platform.GOOS }}
+      GOARCH: ${{ matrix.platform.GOARCH }}
+      CGO_ENABLED: 0
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go build -ldflags "-X main.version=$GITHUB_SHA"
+      - uses: int128/go-release-action@9e1d6ec29fc6ffc2ba55f631baf4a73017d228e1 # v2.5.0
+        with:
+          binary: kubectl-add
+          release-name: ${{ needs.create.outputs.draft-release-name }}

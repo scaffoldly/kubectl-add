@@ -1,0 +1,15 @@
+name: publish
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  krew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Requires a .krew.yaml manifest template in the repo root. See #2.
+      - uses: rajatjindal/krew-release-bot@c970b8a8f6dbc2f2285a26e3ae160903b87002c3 # v0.0.51

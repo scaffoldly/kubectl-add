@@ -263,14 +263,15 @@ func (a *Add) Run() error {
 		return err
 	}
 
+	var kustomizeDir string
 	switch a.Format {
 	case resolve.FormatYAML:
 		// Applied as-is.
 	case resolve.FormatKustomize:
-		// Built server-side; the referenced tree (relative resources,
-		// nested kustomizations) is materialized into a tar the builder
-		// unpacks, leaving the kustomization itself untouched.
-		body, err = kustomize.Materialize(ctx, body, manifest, a.fetch)
+		// Built server-side; the referenced tree (relative and in-site
+		// ../ resources, nested kustomizations) is materialized into a
+		// tar the builder unpacks, leaving the kustomization untouched.
+		body, kustomizeDir, err = kustomize.Materialize(ctx, body, manifest, a.fetch)
 		if err != nil {
 			return err
 		}
@@ -278,7 +279,7 @@ func (a *Add) Run() error {
 		return fmt.Errorf("resolved %s to %s (%s): installing %s is not implemented yet", a.Resource, manifest, a.Format, a.Format)
 	}
 
-	return a.apply(ctx, manifest, body, a.Format)
+	return a.apply(ctx, manifest, body, a.Format, kustomizeDir)
 }
 
 // installHelm discovers the chart, renders it with persisted or default
@@ -333,11 +334,11 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 	}
 
 	// The chart is rendered to plain yaml; apply it like any manifest.
-	return a.apply(ctx, chartURL, rendered, resolve.FormatYAML)
+	return a.apply(ctx, chartURL, rendered, resolve.FormatYAML, "")
 }
 
 // apply streams the manifest to the server-side applier.
-func (a *Add) apply(ctx context.Context, source *url.URL, body []byte, format resolve.Format) error {
+func (a *Add) apply(ctx context.Context, source *url.URL, body []byte, format resolve.Format, kustomizeDir string) error {
 	verbosity := 0
 	if a.Verbose {
 		verbosity = 2
@@ -356,6 +357,7 @@ func (a *Add) apply(ctx context.Context, source *url.URL, body []byte, format re
 		WithNamespace(a.Namespace).
 		WithManifest(body).
 		WithFormat(format).
+		WithDir(kustomizeDir).
 		WithVerbosity(verbosity).
 		WithRemove(a.Remove).
 		WithConfigFlags(a.ConfigFlags).

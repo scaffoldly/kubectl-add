@@ -52,23 +52,62 @@ func TestMaterialize(t *testing.T) {
 	configmap := []byte("kind: ConfigMap\n")
 	app := []byte("kind: Deployment\n")
 
-	archive, err := Materialize(context.Background(), kustomization, base, fakeFetch(map[string][]byte{
+	archive, buildDir, err := Materialize(context.Background(), kustomization, base, fakeFetch(map[string][]byte{
 		"/app/configmap.yaml":   configmap,
 		"/app/sub/dir/app.yaml": app,
 	}))
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
+	if buildDir != "app" {
+		t.Errorf("buildDir = %q, want %q", buildDir, "app")
+	}
 
 	entries := untar(t, archive)
-	if !bytes.Equal(entries["kustomization.yaml"], kustomization) {
-		t.Errorf("kustomization.yaml modified in flight:\n%s", entries["kustomization.yaml"])
+	if !bytes.Equal(entries["app/kustomization.yaml"], kustomization) {
+		t.Errorf("kustomization.yaml modified in flight:\n%s", entries["app/kustomization.yaml"])
 	}
-	if !bytes.Equal(entries["configmap.yaml"], configmap) {
-		t.Errorf("configmap.yaml missing or wrong: %q", entries["configmap.yaml"])
+	if !bytes.Equal(entries["app/configmap.yaml"], configmap) {
+		t.Errorf("configmap.yaml missing or wrong: %q", entries["app/configmap.yaml"])
 	}
-	if !bytes.Equal(entries["sub/dir/app.yaml"], app) {
-		t.Errorf("sub/dir/app.yaml missing or wrong: %q", entries["sub/dir/app.yaml"])
+	if !bytes.Equal(entries["app/sub/dir/app.yaml"], app) {
+		t.Errorf("sub/dir/app.yaml missing or wrong: %q", entries["app/sub/dir/app.yaml"])
+	}
+}
+
+// TestMaterializeInSiteParent covers a kustomization that reaches into a
+// sibling directory via ../ — allowed, since url.ResolveReference keeps it
+// within the host. The tar mirrors the full host-relative paths so the
+// resolved layout stays intact for the builder.
+func TestMaterializeInSiteParent(t *testing.T) {
+	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
+	kustomization := []byte(`resources:
+  - ../yaml/nginx.yaml
+  - ../yaml/configmap.yaml
+`)
+	nginx := []byte("kind: Deployment\n")
+	configmap := []byte("kind: ConfigMap\n")
+
+	archive, buildDir, err := Materialize(context.Background(), kustomization, base, fakeFetch(map[string][]byte{
+		"/yaml/nginx.yaml":     nginx,
+		"/yaml/configmap.yaml": configmap,
+	}))
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if buildDir != "app" {
+		t.Errorf("buildDir = %q, want %q", buildDir, "app")
+	}
+
+	entries := untar(t, archive)
+	if !bytes.Equal(entries["app/kustomization.yaml"], kustomization) {
+		t.Errorf("kustomization.yaml modified in flight:\n%s", entries["app/kustomization.yaml"])
+	}
+	if !bytes.Equal(entries["yaml/nginx.yaml"], nginx) {
+		t.Errorf("../yaml/nginx.yaml missing or wrong: %q", entries["yaml/nginx.yaml"])
+	}
+	if !bytes.Equal(entries["yaml/configmap.yaml"], configmap) {
+		t.Errorf("../yaml/configmap.yaml missing or wrong: %q", entries["yaml/configmap.yaml"])
 	}
 }
 
@@ -78,7 +117,7 @@ func TestMaterializeNested(t *testing.T) {
 	nested := []byte("resources:\n  - ./inner.yaml\n")
 	inner := []byte("kind: Service\n")
 
-	archive, err := Materialize(context.Background(), root, base, fakeFetch(map[string][]byte{
+	archive, _, err := Materialize(context.Background(), root, base, fakeFetch(map[string][]byte{
 		"/app/sub/kustomization.yaml": nested,
 		"/app/sub/inner.yaml":         inner,
 	}))
@@ -87,19 +126,22 @@ func TestMaterializeNested(t *testing.T) {
 	}
 
 	entries := untar(t, archive)
-	if !bytes.Equal(entries["sub/kustomization.yaml"], nested) {
-		t.Errorf("nested kustomization missing: %q", entries["sub/kustomization.yaml"])
+	if !bytes.Equal(entries["app/sub/kustomization.yaml"], nested) {
+		t.Errorf("nested kustomization missing: %q", entries["app/sub/kustomization.yaml"])
 	}
-	if !bytes.Equal(entries["sub/inner.yaml"], inner) {
-		t.Errorf("nested resource missing: %q", entries["sub/inner.yaml"])
+	if !bytes.Equal(entries["app/sub/inner.yaml"], inner) {
+		t.Errorf("nested resource missing: %q", entries["app/sub/inner.yaml"])
 	}
 }
 
-func TestMaterializeEscapeRejected(t *testing.T) {
+// TestMaterializeCrossSiteRejected covers a relative resource whose ../
+// chain resolves onto a different host — rejected, since it would leave the
+// site the kustomization was fetched from.
+func TestMaterializeCrossSiteRejected(t *testing.T) {
 	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
-	kustomization := []byte("resources:\n  - ../evil.yaml\n")
+	kustomization := []byte("resources:\n  - //evil.com/evil.yaml\n")
 
-	if _, err := Materialize(context.Background(), kustomization, base, fakeFetch(nil)); err == nil {
-		t.Fatal("expected error for path escaping the root")
+	if _, _, err := Materialize(context.Background(), kustomization, base, fakeFetch(nil)); err == nil {
+		t.Fatal("expected error for resource escaping the site")
 	}
 }

@@ -59,6 +59,8 @@ type Applier struct {
 	// Format is the manifest's artifact format. A kustomization is built
 	// server-side before applying; yaml is applied as-is.
 	Format resolve.Format
+	// Dir is the directory within the streamed tar to operate in.
+	Dir string
 	// ConfigFlags supplies kubectl's standard flags; the request-scoped
 	// ones (namespace, request-timeout) are forwarded to the remote
 	// kubectl. Connection/auth flags are not: the remote authenticates
@@ -127,6 +129,12 @@ func (a *Applier) WithRemove(remove bool) *Applier {
 // installs it.
 func (a *Applier) WithFormat(format resolve.Format) *Applier {
 	a.Format = format
+	return a
+}
+
+// WithDir sets the directory within the streamed tar to operate in.
+func (a *Applier) WithDir(dir string) *Applier {
+	a.Dir = dir
 	return a
 }
 
@@ -214,10 +222,13 @@ func (a *Applier) pipeKustomize(ctx context.Context, builder, applier string) er
 
 	buildErr := make(chan error, 1)
 	go func() {
-		// Unpack the streamed kustomization tree, build it, write the
-		// rendered manifest to the pipe for the applier to consume.
-		script := `d=$(mktemp -d) && tar -x -C "$d" && exec kubectl kustomize "$d"`
-		err := a.stream(ctx, builder, []string{"sh", "-c", script}, bytes.NewReader(a.Manifest), pw, a.Err)
+		// Unpack the streamed kustomization tree, build the kustomization
+		// dir, write the rendered manifest to the pipe for the applier.
+		// The dir arrives as $1 (real argv) so it can't be reinterpreted
+		// by the shell.
+		script := `d=$(mktemp -d) && tar -x -C "$d" && exec kubectl kustomize "$d/$1"`
+		command := []string{"sh", "-c", script, "sh", a.Dir}
+		err := a.stream(ctx, builder, command, bytes.NewReader(a.Manifest), pw, a.Err)
 		pw.CloseWithError(err)
 		buildErr <- err
 	}()

@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 )
 
@@ -54,10 +55,14 @@ func (r *Registry) WithResolver(resolver Resolver) *Registry {
 
 // Resolve routes the resource to the first resolver that detects it.
 func (r *Registry) Resolve(resource string) (*Resolution, error) {
+	slog.Info("resolving", "resource", resource)
 	for _, resolver := range r.resolvers {
-		if resolver.Detect(resource) {
-			return resolver.Resolve(resource)
+		if !resolver.Detect(resource) {
+			slog.Debug("resolver did not detect resource", "resolver", resolver.Name(), "resource", resource)
+			continue
 		}
+		slog.Debug("resolver detected resource", "resolver", resolver.Name(), "resource", resource)
+		return resolver.Resolve(resource)
 	}
 	return nil, fmt.Errorf("no resolver recognizes resource %q", resource)
 }

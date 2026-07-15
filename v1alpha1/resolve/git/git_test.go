@@ -8,10 +8,10 @@ import (
 func TestRepo(t *testing.T) {
 	b := New()
 	for resource, want := range map[string]string{
-		"kubernetes/ingress-nginx":                             "kubernetes/ingress-nginx",
-		"https://github.com/kubernetes/ingress-nginx":          "kubernetes/ingress-nginx",
-		"https://github.com/kubernetes/ingress-nginx.git":      "kubernetes/ingress-nginx",
-		"git@github.com:kubernetes/ingress-nginx.git":          "kubernetes/ingress-nginx",
+		"kubernetes/ingress-nginx":                                     "kubernetes/ingress-nginx",
+		"https://github.com/kubernetes/ingress-nginx":                  "kubernetes/ingress-nginx",
+		"https://github.com/kubernetes/ingress-nginx.git":              "kubernetes/ingress-nginx",
+		"git@github.com:kubernetes/ingress-nginx.git":                  "kubernetes/ingress-nginx",
 		"https://github.com/kubernetes/ingress-nginx/tree/main/charts": "kubernetes/ingress-nginx",
 	} {
 		got, err := b.Repo(resource)

@@ -14,6 +14,7 @@ var configFlags = genericclioptions.NewConfigFlags(true)
 func main() {
 	rootCmd := add.New().WithConfigFlags(configFlags).IntoCobra()
 	rootCmd.PersistentFlags().Bool("debug", false, "enable debug output")
+	rootCmd.PersistentFlags().Bool("verbose", false, "enable verbose output")
 	configFlags.AddFlags(rootCmd.PersistentFlags())
 
 	if err := rootCmd.Execute(); err != nil {

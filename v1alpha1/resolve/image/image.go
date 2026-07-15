@@ -2,6 +2,7 @@ package image
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -39,6 +40,7 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 		return nil, fmt.Errorf("image resolver: parsing %q: %w", resource, err)
 	}
 	// TODO: Reference — resolve the tag (latest release) when none is given
+	slog.Debug("assuming helm chart for oci reference", "url", u)
 	return helm.Resolution(r.Name(), u), nil
 }
 

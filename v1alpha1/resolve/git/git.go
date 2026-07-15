@@ -3,6 +3,7 @@ package git
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -88,6 +89,7 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 		}
 	}
 	if chart != "" {
+		slog.Info("found helm chart", "repo", repo, "chart", chart, "tag", tag)
 		u, err := url.Parse(fmt.Sprintf("https://github.com/%s/tree/%s/%s", repo, tag, chart))
 		if err != nil {
 			return nil, fmt.Errorf("git resolver: building chart URL: %w", err)
@@ -98,6 +100,7 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 	// kustomize: kustomization.yaml at the repo root.
 	for _, path := range paths {
 		if path == "kustomization.yaml" {
+			slog.Info("found kustomization", "repo", repo, "tag", tag)
 			u, err := url.Parse(fmt.Sprintf("https://github.com/%s/tree/%s", repo, tag))
 			if err != nil {
 				return nil, fmt.Errorf("git resolver: building kustomization URL: %w", err)
@@ -143,6 +146,7 @@ func (r *Resolver) LatestRelease(resource string) (string, error) {
 	if release.TagName == "" {
 		return "", fmt.Errorf("git resolver: %s has no releases", repo)
 	}
+	slog.Info("found latest release", "repo", repo, "tag", release.TagName)
 	return release.TagName, nil
 }
 
@@ -170,6 +174,7 @@ func (r *Resolver) Tree(resource string, ref string) ([]string, error) {
 	for _, entry := range tree.Tree {
 		paths = append(paths, entry.Path)
 	}
+	slog.Debug("fetched repo tree", "repo", repo, "ref", ref, "paths", len(paths), "truncated", tree.Truncated)
 	return paths, nil
 }
 
@@ -181,9 +186,11 @@ func (r *Resolver) get(url string, out any) error {
 		return fmt.Errorf("git resolver: building request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+	token := os.Getenv("GITHUB_TOKEN")
+	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	slog.Debug("github api request", "url", url, "authenticated", token != "")
 
 	resp, err := r.client.Do(req)
 	if err != nil {

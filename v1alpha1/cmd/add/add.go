@@ -1,16 +1,21 @@
 package add
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
 
+	"github.com/lmittmann/tint"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/git"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/http"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/image"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/rest"
 )
@@ -28,6 +33,10 @@ type Add struct {
 	Format string
 	// Namespace scopes the apply.
 	Namespace string
+	// Debug enables debug logging and kubectl -v=4.
+	Debug bool
+	// Verbose enables kubectl -v=2. Debug wins when both are set.
+	Verbose bool
 	// ConfigFlags supplies kubectl's standard connection flags.
 	ConfigFlags *genericclioptions.ConfigFlags
 	// RESTConfig is the cluster connection config.
@@ -70,6 +79,10 @@ func (a *Add) IntoCobra() *cobra.Command {
 // config and namespace resolved from ConfigFlags. Runs at execute time, so
 // flag values are populated.
 func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
+	debug, _ := cmd.Flags().GetBool("debug")
+	a.WithDebug(debug)
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	a.WithVerbose(verbose)
 	a.WithResource(args[0])
 
 	if a.ConfigFlags != nil {
@@ -93,6 +106,65 @@ func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
 
 func (a *Add) WithResource(resource string) *Add {
 	a.Resource = resource
+	return a
+}
+
+const (
+	ansiReset = "\x1b[0m"
+	ansiBold  = "\x1b[1m"
+	ansiDim   = "\x1b[2m"
+	ansiCyan  = "\x1b[36m"
+)
+
+// logHandler prints INFO records without the time= and level= prefix,
+// keeping the full structured text format for every other level.
+type logHandler struct {
+	slog.Handler
+	out   io.Writer
+	color bool
+}
+
+func (h *logHandler) Handle(ctx context.Context, record slog.Record) error {
+	if record.Level == slog.LevelInfo {
+		line := record.Message
+		if h.color {
+			line = ansiBold + record.Message + ansiReset
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if h.color {
+				line += " " + ansiDim + attr.Key + "=" + ansiReset + ansiCyan + attr.Value.String() + ansiReset
+			} else {
+				line += " " + attr.String()
+			}
+			return true
+		})
+		_, err := fmt.Fprintln(h.out, line)
+		return err
+	}
+	return h.Handler.Handle(ctx, record)
+}
+
+// WithDebug configures the process-wide log level: debug logs are emitted
+// to stderr only when enabled. Output is colored when stderr is a terminal
+// and NO_COLOR is unset.
+func (a *Add) WithDebug(debug bool) *Add {
+	a.Debug = debug
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	color := term.IsTerminal(int(os.Stderr.Fd())) && os.Getenv("NO_COLOR") == ""
+	slog.SetDefault(slog.New(&logHandler{
+		Handler: tint.NewTextHandler(os.Stderr, &tint.Options{Level: level, NoColor: !color}),
+		out:     os.Stderr,
+		color:   color,
+	}))
+	return a
+}
+
+// WithVerbose enables verbose kubectl output.
+func (a *Add) WithVerbose(verbose bool) *Add {
+	a.Verbose = verbose
 	return a
 }
 
@@ -130,6 +202,7 @@ func (a *Add) URL() *url.URL {
 		return nil
 	}
 	a.Format = resolution.Format
+	slog.Info("resolved", "resolver", resolution.Resolver, "format", resolution.Format, "url", resolution.URL)
 	return resolution.URL
 }
 
@@ -149,6 +222,11 @@ func (a *Add) Run() error {
 	}
 
 	args := []string{"apply", "-f", manifest.String(), "--namespace", a.Namespace}
+	if a.Debug {
+		args = append(args, "-v=4")
+	} else if a.Verbose {
+		args = append(args, "-v=2")
+	}
 	if a.ConfigFlags != nil {
 		if context := *a.ConfigFlags.Context; context != "" {
 			args = append(args, "--context", context)
@@ -158,7 +236,8 @@ func (a *Add) Run() error {
 		}
 	}
 
-	fmt.Printf("applying %s\n", manifest)
+	slog.Info("applying", "url", manifest)
+	slog.Debug("running kubectl", "args", args)
 	apply := exec.Command("kubectl", args...)
 	apply.Stdout = os.Stdout
 	apply.Stderr = os.Stderr

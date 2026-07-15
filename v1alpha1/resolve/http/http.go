@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -38,11 +39,13 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 	}
 
 	if strings.HasSuffix(u.Path, ".tgz") {
+		slog.Debug("sniffed packaged helm chart", "url", u)
 		return helm.Resolution(r.Name(), u), nil
 	}
 
 	// TODO: ContentType sniff for chart repos (index.yaml) and
 	// kustomization dirs before falling back to yaml.
+	slog.Debug("falling back to yaml manifest", "url", u)
 	return yaml.Resolution(r.Name(), u), nil
 }
 

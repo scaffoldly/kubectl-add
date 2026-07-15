@@ -98,6 +98,31 @@ func TestMaterializeNested(t *testing.T) {
 	}
 }
 
+// TestMaterializeBases covers the deprecated bases field, walked like
+// resources. Bases always point to directories (nested kustomizations).
+func TestMaterializeBases(t *testing.T) {
+	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
+	root := []byte("bases:\n  - ./base\n")
+	nested := []byte("resources:\n  - ./deploy.yaml\n")
+	deploy := []byte("kind: Deployment\n")
+
+	archive, _, err := Materialize(context.Background(), root, base, fakeFetch(map[string][]byte{
+		"/app/base/kustomization.yaml": nested,
+		"/app/base/deploy.yaml":        deploy,
+	}))
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	entries := untar(t, archive)
+	if !bytes.Equal(entries["app/base/kustomization.yaml"], nested) {
+		t.Errorf("base kustomization missing: %q", entries["app/base/kustomization.yaml"])
+	}
+	if !bytes.Equal(entries["app/base/deploy.yaml"], deploy) {
+		t.Errorf("base resource missing: %q", entries["app/base/deploy.yaml"])
+	}
+}
+
 // TestMaterializeCrossSiteRejected covers a relative resource whose ../
 // chain resolves onto a different host — rejected, since it would leave the
 // site the kustomization was fetched from.

@@ -58,12 +58,15 @@ func materialize(ctx context.Context, tw *tar.Writer, kustomization []byte, base
 
 	var doc struct {
 		Resources []string `json:"resources"`
+		// bases is the deprecated predecessor to resources; kustomize
+		// still honors it, so walk it the same way.
+		Bases []string `json:"bases"`
 	}
 	if err := yaml.Unmarshal(kustomization, &doc); err != nil {
 		return fmt.Errorf("kustomize: parsing kustomization at %s: %w", base, err)
 	}
 
-	for _, resource := range doc.Resources {
+	for _, resource := range append(doc.Resources, doc.Bases...) {
 		if u, err := url.Parse(resource); err == nil && u.Scheme != "" {
 			// Absolute: the builder fetches it during the build.
 			continue

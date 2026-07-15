@@ -10,7 +10,6 @@ import (
 	"os"
 
 	"github.com/lmittmann/tint"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/kustomize"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/remote"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/git"
@@ -30,9 +29,8 @@ type Add struct {
 	// an oci:// chart reference, or a git repo like
 	// "kubernetes/ingress-nginx".
 	Resource string
-	// Format is the resolved artifact format (helm, kustomize, yaml),
-	// set by URL.
-	Format string
+	// Format is the resolved artifact format, set by URL.
+	Format resolve.Format
 	// Namespace scopes the apply.
 	Namespace string
 	// Debug enables debug logging and kubectl -v=4.
@@ -241,14 +239,8 @@ func (a *Add) Run() error {
 	}
 
 	switch a.Format {
-	case "yaml":
-		// Ready to apply as-is.
-	case "kustomize":
-		slog.Info("building kustomization", "url", manifest)
-		body, err = kustomize.Build(body)
-		if err != nil {
-			return err
-		}
+	case resolve.FormatYAML, resolve.FormatKustomize:
+		// yaml is applied as-is; a kustomization is built server-side.
 	default:
 		// TODO: render helm charts to yaml, then apply
 		return fmt.Errorf("resolved %s to %s (%s): installing %s is not implemented yet", a.Resource, manifest, a.Format, a.Format)
@@ -271,6 +263,7 @@ func (a *Add) Run() error {
 		WithRESTConfig(a.RESTConfig).
 		WithNamespace(a.Namespace).
 		WithManifest(body).
+		WithFormat(a.Format).
 		WithVerbosity(verbosity).
 		WithRemove(a.Remove).
 		WithConfigFlags(a.ConfigFlags).

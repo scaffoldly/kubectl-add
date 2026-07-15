@@ -14,6 +14,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -55,6 +56,9 @@ type Applier struct {
 	Verbosity int
 	// Remove deletes the manifest's resources instead of applying them.
 	Remove bool
+	// Format is the manifest's artifact format. A kustomization is built
+	// server-side before applying; yaml is applied as-is.
+	Format resolve.Format
 	// ConfigFlags supplies kubectl's standard flags; the request-scoped
 	// ones (namespace, request-timeout) are forwarded to the remote
 	// kubectl. Connection/auth flags are not: the remote authenticates
@@ -116,6 +120,13 @@ func (a *Applier) WithVerbosity(v int) *Applier {
 // WithRemove selects kubectl delete instead of apply.
 func (a *Applier) WithRemove(remove bool) *Applier {
 	a.Remove = remove
+	return a
+}
+
+// WithFormat sets the manifest's artifact format, selecting how the runner
+// installs it.
+func (a *Applier) WithFormat(format resolve.Format) *Applier {
+	a.Format = format
 	return a
 }
 
@@ -328,15 +339,26 @@ func podReady(pod *corev1.Pod) bool {
 // stdin. The fixed connection flags plus "$@" run through sh so $TOKEN is
 // expanded from the environment; caller args arrive as real argv via "$@",
 // so they cannot be reinterpreted by the shell.
+//
+// For a kustomization, the streamed stdin is the kustomization.yaml; the
+// runner builds it with `kubectl kustomize` (fetching remote resources
+// in-cluster) and pipes the rendered manifest into the apply.
 func (a *Applier) exec(ctx context.Context, name string) error {
 	verb := "apply"
 	if a.Remove {
 		verb = "delete"
 	}
-	script := fmt.Sprintf(
-		`exec kubectl %s --server=%s --certificate-authority=%s/%s --token="$TOKEN" "$@"`,
-		verb, apiServer, secretPath, caKey,
-	)
+	apply := fmt.Sprintf(`kubectl %s --server=%s --certificate-authority=%s/%s --token="$TOKEN" "$@"`,
+		verb, apiServer, secretPath, caKey)
+
+	var script string
+	if a.Format == resolve.FormatKustomize {
+		// Capture the streamed kustomization, build it server-side, and
+		// pipe the rendered manifest into the apply.
+		script = `d=$(mktemp -d) && cat > "$d/kustomization.yaml" && kubectl kustomize "$d" | ` + apply
+	} else {
+		script = "exec " + apply
+	}
 
 	args := []string{"sh", "-c", script, "sh"}
 

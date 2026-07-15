@@ -6,14 +6,24 @@ import (
 	"net/url"
 )
 
+// Format is the artifact format a resolution distills to, determining how
+// it is installed.
+type Format string
+
+const (
+	FormatYAML      Format = "yaml"
+	FormatKustomize Format = "kustomize"
+	FormatHelm      Format = "helm"
+)
+
 // Resolution is the result of resolving a resource: a concrete artifact
 // kubectl-add knows how to install.
 type Resolution struct {
 	// Resolver is the name of the transport resolver that produced this
 	// resolution, e.g. "git", "http", "image".
 	Resolver string
-	// Format is the artifact format, e.g. "helm", "kustomize", "yaml".
-	Format string
+	// Format is the artifact format.
+	Format Format
 	// URL locates the resolved artifact (manifest, chart, kustomization).
 	URL *url.URL
 }

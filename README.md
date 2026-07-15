@@ -89,6 +89,31 @@ kubectl edit configmap kubectl-add-values-<hash> -n <namespace>
 kubectl add https://metallb.github.io/metallb
 ```
 
+## Compatibility
+
+What `kubectl add` can resolve and install, by source and format:
+
+| Source | YAML | Kustomize | Helm |
+| --- | --- | --- | --- |
+| HTTP(S) URL | ✅ | ✅ | ✅ &nbsp;loose `Chart.yaml`, repo `index.yaml` |
+| GitHub repo &nbsp;(`org/repo`, `.git`, `github.com/…`) | 🚧 [#3] | ✅ &nbsp;root `kustomization.yaml` | ✅ &nbsp;chart under `charts/` at the latest release |
+| OCI &nbsp;(`oci://`) | — | — | 🚧 [#4] |
+
+✅ supported &nbsp;·&nbsp; 🚧 planned &nbsp;·&nbsp; — n/a
+
+Notes:
+
+- Kustomizations sourced from a URL support relative resources, `bases`, nested
+  kustomizations, and remote git/http references. Some kustomize fields that
+  reference local files are not yet materialized ([#1]).
+- Helm charts install from loose files or an HTTP chart repository; OCI-hosted
+  charts are not fetched yet ([#4]). `?chart=` and `?version=` pin the selection
+  from a repository.
+
+[#1]: https://github.com/scaffoldly/kubectl-add/issues/1
+[#3]: https://github.com/scaffoldly/kubectl-add/issues/3
+[#4]: https://github.com/scaffoldly/kubectl-add/issues/4
+
 ## How it works
 
 `kubectl add` never runs `kubectl apply` locally. Instead it:

@@ -214,9 +214,9 @@ func (a *Applier) pipeKustomize(ctx context.Context, builder, applier string) er
 
 	buildErr := make(chan error, 1)
 	go func() {
-		// Capture the streamed kustomization, build it, write the
+		// Unpack the streamed kustomization tree, build it, write the
 		// rendered manifest to the pipe for the applier to consume.
-		script := `d=$(mktemp -d) && cat > "$d/kustomization.yaml" && exec kubectl kustomize "$d"`
+		script := `d=$(mktemp -d) && tar -x -C "$d" && exec kubectl kustomize "$d"`
 		err := a.stream(ctx, builder, []string{"sh", "-c", script}, bytes.NewReader(a.Manifest), pw, a.Err)
 		pw.CloseWithError(err)
 		buildErr <- err

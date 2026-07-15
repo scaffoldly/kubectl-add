@@ -243,9 +243,10 @@ func (a *Add) Run() error {
 	case resolve.FormatYAML:
 		// Applied as-is.
 	case resolve.FormatKustomize:
-		// Built server-side; relative resources are first rebased onto
-		// the kustomization's URL so the builder can fetch them.
-		body, err = kustomize.Rebase(body, manifest)
+		// Built server-side; the referenced tree (relative resources,
+		// nested kustomizations) is materialized into a tar the builder
+		// unpacks, leaving the kustomization itself untouched.
+		body, err = kustomize.Materialize(ctx, body, manifest, a.fetch)
 		if err != nil {
 			return err
 		}

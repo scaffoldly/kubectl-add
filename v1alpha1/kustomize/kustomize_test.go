@@ -1,64 +1,105 @@
 package kustomize
 
 import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"net/url"
-	"strings"
 	"testing"
 )
 
-func TestRebase(t *testing.T) {
-	base, _ := url.Parse("https://scaffoldly.github.io/kubectl-add/kustomization.yaml")
+// fakeFetch serves URL paths from a map.
+func fakeFetch(files map[string][]byte) Fetch {
+	return func(_ context.Context, u *url.URL) ([]byte, error) {
+		content, ok := files[u.Path]
+		if !ok {
+			return nil, fmt.Errorf("not found: %s", u)
+		}
+		return content, nil
+	}
+}
 
-	in := []byte(`apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - https://scaffoldly.github.io/kubectl-add/nginx.yaml
+// untar returns the archive's entries by name.
+func untar(t *testing.T, archive []byte) map[string][]byte {
+	t.Helper()
+	entries := map[string][]byte{}
+	tr := tar.NewReader(bytes.NewReader(archive))
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return entries
+		}
+		if err != nil {
+			t.Fatalf("reading tar: %v", err)
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("reading tar entry %s: %v", header.Name, err)
+		}
+		entries[header.Name] = content
+	}
+}
+
+func TestMaterialize(t *testing.T) {
+	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
+	kustomization := []byte(`resources:
+  - https://example.com/remote.yaml
   - ./configmap.yaml
   - sub/dir/app.yaml
 `)
+	configmap := []byte("kind: ConfigMap\n")
+	app := []byte("kind: Deployment\n")
 
-	out, err := Rebase(in, base)
+	archive, err := Materialize(context.Background(), kustomization, base, fakeFetch(map[string][]byte{
+		"/app/configmap.yaml":   configmap,
+		"/app/sub/dir/app.yaml": app,
+	}))
 	if err != nil {
-		t.Fatalf("Rebase: %v", err)
+		t.Fatalf("Materialize: %v", err)
 	}
-	got := string(out)
 
-	for _, want := range []string{
-		"https://scaffoldly.github.io/kubectl-add/nginx.yaml",
-		"https://scaffoldly.github.io/kubectl-add/configmap.yaml",
-		"https://scaffoldly.github.io/kubectl-add/sub/dir/app.yaml",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in:\n%s", want, got)
-		}
+	entries := untar(t, archive)
+	if !bytes.Equal(entries["kustomization.yaml"], kustomization) {
+		t.Errorf("kustomization.yaml modified in flight:\n%s", entries["kustomization.yaml"])
 	}
-	if strings.Contains(got, "./configmap.yaml") {
-		t.Errorf("relative path survived:\n%s", got)
+	if !bytes.Equal(entries["configmap.yaml"], configmap) {
+		t.Errorf("configmap.yaml missing or wrong: %q", entries["configmap.yaml"])
+	}
+	if !bytes.Equal(entries["sub/dir/app.yaml"], app) {
+		t.Errorf("sub/dir/app.yaml missing or wrong: %q", entries["sub/dir/app.yaml"])
 	}
 }
 
-func TestRebaseNoResources(t *testing.T) {
-	base, _ := url.Parse("https://example.com/kustomization.yaml")
-	in := []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n")
-	out, err := Rebase(in, base)
+func TestMaterializeNested(t *testing.T) {
+	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
+	root := []byte("resources:\n  - ./sub/\n")
+	nested := []byte("resources:\n  - ./inner.yaml\n")
+	inner := []byte("kind: Service\n")
+
+	archive, err := Materialize(context.Background(), root, base, fakeFetch(map[string][]byte{
+		"/app/sub/kustomization.yaml": nested,
+		"/app/sub/inner.yaml":         inner,
+	}))
 	if err != nil {
-		t.Fatalf("Rebase: %v", err)
+		t.Fatalf("Materialize: %v", err)
 	}
-	if string(out) != string(in) {
-		t.Errorf("expected unchanged output, got:\n%s", out)
+
+	entries := untar(t, archive)
+	if !bytes.Equal(entries["sub/kustomization.yaml"], nested) {
+		t.Errorf("nested kustomization missing: %q", entries["sub/kustomization.yaml"])
+	}
+	if !bytes.Equal(entries["sub/inner.yaml"], inner) {
+		t.Errorf("nested resource missing: %q", entries["sub/inner.yaml"])
 	}
 }
 
-func TestRebaseAllAbsolute(t *testing.T) {
-	base, _ := url.Parse("https://example.com/kustomization.yaml")
-	in := []byte(`resources:
-  - https://example.com/a.yaml
-`)
-	out, err := Rebase(in, base)
-	if err != nil {
-		t.Fatalf("Rebase: %v", err)
-	}
-	if string(out) != string(in) {
-		t.Errorf("expected byte-identical passthrough, got:\n%s", out)
+func TestMaterializeEscapeRejected(t *testing.T) {
+	base, _ := url.Parse("https://example.com/app/kustomization.yaml")
+	kustomization := []byte("resources:\n  - ../evil.yaml\n")
+
+	if _, err := Materialize(context.Background(), kustomization, base, fakeFetch(nil)); err == nil {
+		t.Fatal("expected error for path escaping the root")
 	}
 }

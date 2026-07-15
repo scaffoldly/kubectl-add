@@ -1,8 +1,11 @@
-// Package remote runs kubectl apply inside the cluster: it mints a
-// short-lived ServiceAccount token into a Secret, runs a short-lived pod
-// that authenticates with that token (fully file-less — no kubeconfig, just
-// --server/--certificate-authority/--token flags), and streams the manifest
-// to kubectl over the exec's stdin.
+// Package remote runs kubectl apply inside the cluster as the connected user:
+// it forwards the caller's own credential (client certificate or bearer
+// token) into a short-lived Secret, runs a short-lived pod that authenticates
+// with it (fully file-less — no kubeconfig, just --server/--certificate-
+// authority plus the caller's --token or --client-certificate/--client-key),
+// and streams the manifest to kubectl over the exec's stdin. The apply is
+// therefore attributed to, and constrained by, the caller's own RBAC — no
+// ServiceAccount is created and no privileges are granted.
 package remote
 
 import (
@@ -15,10 +18,7 @@ import (
 	"time"
 
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
-	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -33,17 +33,13 @@ const (
 	DefaultRunnerImage = "bitnami/kubectl:latest"
 	// apiServer is the in-cluster API server address.
 	apiServer = "https://kubernetes.default.svc"
-	// secretPath is where the token/CA Secret is mounted in the pod.
+	// secretPath is where the credential Secret is mounted in the pod.
 	secretPath = "/auth"
-	// tokenKey and caKey are the Secret keys holding the credentials.
+	// Secret keys holding the caller's forwarded credential and the CA.
 	tokenKey = "token"
+	certKey  = "client.crt"
+	keyKey   = "client.key"
 	caKey    = "ca.crt"
-	// tokenTTL bounds the minted ServiceAccount token's lifetime.
-	tokenTTL = 10 * time.Minute
-
-	saName      = "kubectl-add"
-	adminRole   = "cluster-admin"
-	bindingName = "kubectl-add:apply"
 )
 
 // Applier runs a server-side kubectl apply of Manifest.
@@ -64,7 +60,7 @@ type Applier struct {
 	// ConfigFlags supplies kubectl's standard flags; the request-scoped
 	// ones (namespace, request-timeout) are forwarded to the remote
 	// kubectl. Connection/auth flags are not: the remote authenticates
-	// with the minted ServiceAccount token.
+	// with the caller's forwarded credential.
 	ConfigFlags *genericclioptions.ConfigFlags
 
 	// Out/Err receive the remote kubectl's streams.
@@ -72,6 +68,7 @@ type Applier struct {
 	Err io.Writer
 
 	client *kubernetes.Clientset
+	cred   *credential
 	err    error
 }
 
@@ -162,14 +159,11 @@ func (a *Applier) Run(ctx context.Context) error {
 	}
 	a.client = client
 
-	if err := a.ensureRBAC(ctx); err != nil {
-		return err
-	}
-
-	token, err := a.mintToken(ctx)
+	cred, err := callerCredential(a.RESTConfig)
 	if err != nil {
 		return err
 	}
+	a.cred = cred
 
 	ca, err := a.caCert()
 	if err != nil {
@@ -178,12 +172,13 @@ func (a *Applier) Run(ctx context.Context) error {
 
 	base := "kubectl-add-" + rand.String(5)
 
-	if err := a.createSecret(ctx, base, token, ca); err != nil {
+	if err := a.createSecret(ctx, base, cred, ca); err != nil {
 		return err
 	}
 	defer a.deleteSecret(base)
 
-	// The applier pod carries the minted token and runs kubectl apply.
+	// The applier pod carries the caller's credential and runs kubectl apply
+	// as them.
 	applier := base
 	if err := a.createPod(ctx, applier, base); err != nil {
 		return err
@@ -240,40 +235,6 @@ func (a *Applier) pipeKustomize(ctx context.Context, builder, applier string) er
 	return applyErr
 }
 
-// ensureRBAC creates the runner ServiceAccount and binds it to cluster-admin
-// so its minted token can apply arbitrary manifests. Idempotent.
-func (a *Applier) ensureRBAC(ctx context.Context) error {
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: a.Namespace}}
-	if _, err := a.client.CoreV1().ServiceAccounts(a.Namespace).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("remote: creating service account: %w", err)
-	}
-
-	binding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName + ":" + a.Namespace},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: adminRole},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: a.Namespace}},
-	}
-	if _, err := a.client.RbacV1().ClusterRoleBindings().Create(ctx, binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("remote: creating cluster role binding: %w", err)
-	}
-
-	slog.Debug("ensured runner rbac", "serviceaccount", saName, "role", adminRole, "namespace", a.Namespace)
-	return nil
-}
-
-// mintToken requests a short-lived token for the runner ServiceAccount via
-// the TokenRequest API.
-func (a *Applier) mintToken(ctx context.Context) (string, error) {
-	seconds := int64(tokenTTL.Seconds())
-	req := &authnv1.TokenRequest{Spec: authnv1.TokenRequestSpec{ExpirationSeconds: &seconds}}
-	resp, err := a.client.CoreV1().ServiceAccounts(a.Namespace).CreateToken(ctx, saName, req, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("remote: minting token: %w", err)
-	}
-	slog.Info("minted token", "serviceaccount", saName, "ttl", tokenTTL.String())
-	return resp.Status.Token, nil
-}
-
 // caCert returns the cluster CA bundle from the local REST config, used by
 // the remote kubectl to verify the API server.
 func (a *Applier) caCert() ([]byte, error) {
@@ -290,28 +251,35 @@ func (a *Applier) caCert() ([]byte, error) {
 	return nil, fmt.Errorf("remote: no cluster CA in REST config")
 }
 
-// createSecret stores the minted token and CA bundle. The token is injected
-// into the pod as an env var (not argv), so it never appears in process
-// listings or logs.
-func (a *Applier) createSecret(ctx context.Context, name string, token string, ca []byte) error {
+// createSecret stores the caller's forwarded credential and the CA bundle. A
+// bearer token is injected into the pod as an env var (not argv), so it never
+// appears in process listings or logs; a client certificate is mounted as
+// files.
+func (a *Applier) createSecret(ctx context.Context, name string, cred *credential, ca []byte) error {
+	data := map[string][]byte{caKey: ca}
+	if cred.token != "" {
+		data[tokenKey] = []byte(cred.token)
+	} else {
+		data[certKey] = cred.certPEM
+		data[keyKey] = cred.keyPEM
+	}
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: a.Namespace},
 		Type:       corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			tokenKey: []byte(token),
-			caKey:    ca,
-		},
+		Data:       data,
 	}
 	if _, err := a.client.CoreV1().Secrets(a.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("remote: creating secret: %w", err)
 	}
-	slog.Debug("created auth secret", "name", name)
+	slog.Debug("created credential secret", "name", name)
 	return nil
 }
 
 // createPod starts a sleeping kubectl runner. When secretName is non-empty
-// the pod mounts that Secret's CA and injects its token as $TOKEN, for the
-// applier; an empty secretName yields a credential-less pod, for the builder.
+// the pod mounts that Secret's CA plus the caller's credential — a bearer
+// token as $TOKEN, or a client certificate as files — for the applier; an
+// empty secretName yields a credential-less pod, for the builder.
 func (a *Applier) createPod(ctx context.Context, name, secretName string) error {
 	noAutomount := false
 	container := corev1.Container{
@@ -328,17 +296,25 @@ func (a *Applier) createPod(ctx context.Context, name, secretName string) error 
 	}
 
 	if secretName != "" {
-		// The applier authenticates with the minted token from the
-		// Secret, not the pod's own projected SA token.
-		container.Env = []corev1.EnvVar{{
-			Name: "TOKEN",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  tokenKey,
+		// The applier authenticates as the caller with their forwarded
+		// credential from the Secret, not the pod's own projected SA token.
+		items := []corev1.KeyToPath{{Key: caKey, Path: caKey}}
+		if a.cred.token != "" {
+			container.Env = []corev1.EnvVar{{
+				Name: "TOKEN",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  tokenKey,
+					},
 				},
-			},
-		}}
+			}}
+		} else {
+			items = append(items,
+				corev1.KeyToPath{Key: certKey, Path: certKey},
+				corev1.KeyToPath{Key: keyKey, Path: keyKey},
+			)
+		}
 		container.VolumeMounts = []corev1.VolumeMount{{
 			Name:      "auth",
 			MountPath: secretPath,
@@ -349,7 +325,7 @@ func (a *Applier) createPod(ctx context.Context, name, secretName string) error 
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: secretName,
-					Items:      []corev1.KeyToPath{{Key: caKey, Path: caKey}},
+					Items:      items,
 				},
 			},
 		}}
@@ -395,7 +371,8 @@ func podReady(pod *corev1.Pod) bool {
 }
 
 // apply runs kubectl apply (or delete) in the applier pod, file-less: it
-// authenticates with the minted token (via $TOKEN) and the mounted CA, and
+// authenticates as the caller with their forwarded credential (a bearer
+// token via $TOKEN, or a mounted client certificate) and the mounted CA, and
 // reads the manifest from stdin. The fixed connection flags plus "$@" run
 // through sh so $TOKEN is expanded from the environment; caller args arrive
 // as real argv via "$@", so they cannot be reinterpreted by the shell.
@@ -404,8 +381,14 @@ func (a *Applier) apply(ctx context.Context, pod string, manifest io.Reader) err
 	if a.Remove {
 		verb = "delete"
 	}
-	script := fmt.Sprintf(`exec kubectl %s --server=%s --certificate-authority=%s/%s --token="$TOKEN" "$@"`,
-		verb, apiServer, secretPath, caKey)
+
+	auth := `--token="$TOKEN"`
+	if a.cred.token == "" {
+		auth = fmt.Sprintf(`--client-certificate=%s/%s --client-key=%s/%s`,
+			secretPath, certKey, secretPath, keyKey)
+	}
+	script := fmt.Sprintf(`exec kubectl %s --server=%s --certificate-authority=%s/%s %s "$@"`,
+		verb, apiServer, secretPath, caKey, auth)
 
 	args := []string{"sh", "-c", script, "sh"}
 

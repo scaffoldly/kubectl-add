@@ -32,7 +32,7 @@ func TestDiscoverAndRender(t *testing.T) {
 	}
 
 	// Default values.
-	out, err := Render(chart.Chart, chart.DefaultValues, "rel", "ns")
+	out, err := Render(chart.Chart, chart.DefaultValues, "rel", "ns", "v1.30.0")
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestDiscoverAndRender(t *testing.T) {
 	}
 
 	// Overridden values (as if edited in the ConfigMap).
-	out, err = Render(chart.Chart, []byte("message: edited\n"), "rel", "ns")
+	out, err = Render(chart.Chart, []byte("message: edited\n"), "rel", "ns", "v1.30.0")
 	if err != nil {
 		t.Fatalf("Render override: %v", err)
 	}

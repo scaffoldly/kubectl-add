@@ -6,9 +6,9 @@ chart repository, or a GitHub repo — and applies them **server-side**, so it
 feels like native kubectl.
 
 You give it a resource; the plugin sniffs out what it is, resolves the
-installable artifact, and applies it inside the cluster using a short-lived,
-minted ServiceAccount token — your local kubeconfig is never copied into the
-cluster.
+installable artifact, and applies it inside the cluster **as you** — forwarding
+your own credential into a short-lived Secret, so the apply is constrained by
+your RBAC and no kubeconfig is copied in.
 
 <!-- TODO: screencast GIF -->
 <!-- TODO: resolution/server-side-apply diagram -->
@@ -17,7 +17,7 @@ cluster.
 
 - 🧠 **Smart resolution** — point it at a YAML URL, a kustomization, a helm chart, a chart repo, or a GitHub repo; it sniffs out what it is.
 - ☁️ **Server-side apply** — runs `kubectl` inside the cluster; your local kubeconfig is never copied in.
-- 🔑 **Short-lived credentials** — mints an ephemeral token per run, cleaned up when it's done.
+- 🔑 **Runs as you** — forwards your own credential into a short-lived Secret; the apply uses your identity and RBAC, no ServiceAccount, no escalation.
 - 🎛️ **Kustomize, built in-cluster** — relative resources, `bases`, nested kustomizations, and remote git/http references all resolve.
 - ⎈ **Helm, no tiller, no fuss** — renders charts client-side; installs from loose files, an HTTP chart repository, or a GitHub repo.
 - 📌 **Pin what you want** — `?chart=` and `?version=` select straight from a repository index.
@@ -128,11 +128,15 @@ Notes:
 
 1. **Resolves** the resource through pluggable transports (git, http, image),
    each sniffing the content to pick a format (yaml, kustomize, helm).
-2. **Mints** a short-lived ServiceAccount token via the TokenRequest API and
-   stores it, with the cluster CA, in an in-cluster Secret.
+2. **Forwards your credential** — the client certificate or bearer token from
+   your kubeconfig — into a short-lived Secret, alongside the cluster CA.
 3. **Runs** a throwaway pod (`bitnami/kubectl`) that applies the manifest
-   file-less — `--server`, `--certificate-authority`, `--token` — with the
-   manifest streamed to its stdin (never persisted to etcd).
+   file-less — `--server`, `--certificate-authority`, and your
+   `--token`/`--client-certificate` — with the manifest streamed to its stdin
+   (never persisted to etcd).
+
+The apply runs **as you**: it's attributed to your identity and constrained by
+your own RBAC. No ServiceAccount is created and no privileges are granted.
 
 Kustomizations are built in a second, credential-less pod and piped to the
 applier; the plugin binary is the pipe. Helm charts are rendered client-side
@@ -142,9 +146,11 @@ with the helm SDK and the rendered manifest is applied the same way.
 
 ### Permissions
 
-The runner ServiceAccount (`kubectl-add`) is bound to `cluster-admin` so it can
-apply arbitrary manifests. The binding is created idempotently in the target
-namespace and left in place between runs.
+The apply runs with your own credential, so it can only do what you can. If it
+fails with a forbidden error, you lack the RBAC to apply that resource — grant
+it to your user, or run as one who has it. Authentication methods that can't be
+forwarded (some exec/OIDC setups that return a client certificate rather than a
+token) will error rather than silently escalate.
 
 ### Helm values
 

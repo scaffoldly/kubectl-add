@@ -10,6 +10,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,9 +98,18 @@ func TestExamples(t *testing.T) {
 		{
 			url: "https://scaffoldly.github.io/kubectl-add/kustomization/kustomization.yaml",
 			verify: func(t *testing.T, wantExists bool) {
-				assertExists(t, wantExists, "deployment/nginx", func(ctx context.Context) error {
-					_, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "nginx", metav1.GetOptions{})
-					return err
+				// nginx comes in through a base; the top kustomization
+				// patches it with the e2e=bases label, so a present
+				// deployment must also carry that label.
+				assertExists(t, wantExists, "deployment/nginx (label e2e=bases)", func(ctx context.Context) error {
+					d, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "nginx", metav1.GetOptions{})
+					if err != nil {
+						return err
+					}
+					if d.Labels["e2e"] != "bases" {
+						return fmt.Errorf("deployment/nginx missing label e2e=bases, got %v", d.Labels)
+					}
+					return nil
 				})
 				assertExists(t, wantExists, "service/nginx", func(ctx context.Context) error {
 					_, err := clientset.CoreV1().Services(namespace).Get(ctx, "nginx", metav1.GetOptions{})

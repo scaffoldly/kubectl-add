@@ -168,24 +168,65 @@ func (a *Applier) Run(ctx context.Context) error {
 		return err
 	}
 
-	runID := rand.String(5)
-	name := "kubectl-add-" + runID
+	base := "kubectl-add-" + rand.String(5)
 
-	if err := a.createSecret(ctx, name, token, ca); err != nil {
+	if err := a.createSecret(ctx, base, token, ca); err != nil {
 		return err
 	}
-	defer a.deleteSecret(name)
+	defer a.deleteSecret(base)
 
-	if err := a.createPod(ctx, name); err != nil {
+	// The applier pod carries the minted token and runs kubectl apply.
+	applier := base
+	if err := a.createPod(ctx, applier, base); err != nil {
 		return err
 	}
-	defer a.deletePod(name)
+	defer a.deletePod(applier)
 
-	if err := a.waitReady(ctx, name); err != nil {
-		return err
+	if a.Format != resolve.FormatKustomize {
+		if err := a.waitReady(ctx, applier); err != nil {
+			return err
+		}
+		return a.apply(ctx, applier, bytes.NewReader(a.Manifest))
 	}
 
-	return a.exec(ctx, name)
+	// The builder pod runs kubectl kustomize (no cluster credentials, just
+	// network egress to fetch remote resources). This binary pipes the
+	// builder's stdout into the applier's stdin.
+	builder := base + "-build"
+	if err := a.createPod(ctx, builder, ""); err != nil {
+		return err
+	}
+	defer a.deletePod(builder)
+
+	if err := a.waitReady(ctx, applier); err != nil {
+		return err
+	}
+	if err := a.waitReady(ctx, builder); err != nil {
+		return err
+	}
+	return a.pipeKustomize(ctx, builder, applier)
+}
+
+// pipeKustomize builds the streamed kustomization in the builder pod and
+// pipes its rendered output into the applier pod: this binary is the pipe.
+func (a *Applier) pipeKustomize(ctx context.Context, builder, applier string) error {
+	pr, pw := io.Pipe()
+
+	buildErr := make(chan error, 1)
+	go func() {
+		// Capture the streamed kustomization, build it, write the
+		// rendered manifest to the pipe for the applier to consume.
+		script := `d=$(mktemp -d) && cat > "$d/kustomization.yaml" && exec kubectl kustomize "$d"`
+		err := a.stream(ctx, builder, []string{"sh", "-c", script}, bytes.NewReader(a.Manifest), pw, a.Err)
+		pw.CloseWithError(err)
+		buildErr <- err
+	}()
+
+	applyErr := a.apply(ctx, applier, pr)
+	if err := <-buildErr; err != nil {
+		return fmt.Errorf("remote: building kustomization: %w", err)
+	}
+	return applyErr
 }
 
 // ensureRBAC creates the runner ServiceAccount and binds it to cluster-admin
@@ -257,49 +298,57 @@ func (a *Applier) createSecret(ctx context.Context, name string, token string, c
 	return nil
 }
 
-func (a *Applier) createPod(ctx context.Context, name string) error {
+// createPod starts a sleeping kubectl runner. When secretName is non-empty
+// the pod mounts that Secret's CA and injects its token as $TOKEN, for the
+// applier; an empty secretName yields a credential-less pod, for the builder.
+func (a *Applier) createPod(ctx context.Context, name, secretName string) error {
 	noAutomount := false
+	container := corev1.Container{
+		Name:    "kubectl",
+		Image:   a.RunnerImage,
+		Command: []string{"sleep", "3600"},
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: a.Namespace},
 		Spec: corev1.PodSpec{
-			// The runner authenticates with the minted token from the
-			// Secret, not the pod's own projected SA token.
 			AutomountServiceAccountToken: &noAutomount,
 			RestartPolicy:                corev1.RestartPolicyNever,
-			Containers: []corev1.Container{{
-				Name:    "kubectl",
-				Image:   a.RunnerImage,
-				Command: []string{"sleep", "3600"},
-				Env: []corev1.EnvVar{{
-					Name: "TOKEN",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: name},
-							Key:                  tokenKey,
-						},
-					},
-				}},
-				VolumeMounts: []corev1.VolumeMount{{
-					Name:      "auth",
-					MountPath: secretPath,
-					ReadOnly:  true,
-				}},
-			}},
-			Volumes: []corev1.Volume{{
-				Name: "auth",
-				VolumeSource: corev1.VolumeSource{
-					Secret: &corev1.SecretVolumeSource{
-						SecretName: name,
-						Items:      []corev1.KeyToPath{{Key: caKey, Path: caKey}},
-					},
-				},
-			}},
 		},
 	}
+
+	if secretName != "" {
+		// The applier authenticates with the minted token from the
+		// Secret, not the pod's own projected SA token.
+		container.Env = []corev1.EnvVar{{
+			Name: "TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+					Key:                  tokenKey,
+				},
+			},
+		}}
+		container.VolumeMounts = []corev1.VolumeMount{{
+			Name:      "auth",
+			MountPath: secretPath,
+			ReadOnly:  true,
+		}}
+		pod.Spec.Volumes = []corev1.Volume{{
+			Name: "auth",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: secretName,
+					Items:      []corev1.KeyToPath{{Key: caKey, Path: caKey}},
+				},
+			},
+		}}
+	}
+
+	pod.Spec.Containers = []corev1.Container{container}
 	if _, err := a.client.CoreV1().Pods(a.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("remote: creating pod: %w", err)
 	}
-	slog.Debug("created runner pod", "name", name, "image", a.RunnerImage)
+	slog.Debug("created runner pod", "name", name, "image", a.RunnerImage, "authed", secretName != "")
 	return nil
 }
 
@@ -334,31 +383,18 @@ func podReady(pod *corev1.Pod) bool {
 	return len(pod.Status.ContainerStatuses) > 0
 }
 
-// exec runs kubectl inside the runner, file-less: it authenticates with the
-// minted token (via $TOKEN) and the mounted CA, and reads the manifest from
-// stdin. The fixed connection flags plus "$@" run through sh so $TOKEN is
-// expanded from the environment; caller args arrive as real argv via "$@",
-// so they cannot be reinterpreted by the shell.
-//
-// For a kustomization, the streamed stdin is the kustomization.yaml; the
-// runner builds it with `kubectl kustomize` (fetching remote resources
-// in-cluster) and pipes the rendered manifest into the apply.
-func (a *Applier) exec(ctx context.Context, name string) error {
+// apply runs kubectl apply (or delete) in the applier pod, file-less: it
+// authenticates with the minted token (via $TOKEN) and the mounted CA, and
+// reads the manifest from stdin. The fixed connection flags plus "$@" run
+// through sh so $TOKEN is expanded from the environment; caller args arrive
+// as real argv via "$@", so they cannot be reinterpreted by the shell.
+func (a *Applier) apply(ctx context.Context, pod string, manifest io.Reader) error {
 	verb := "apply"
 	if a.Remove {
 		verb = "delete"
 	}
-	apply := fmt.Sprintf(`kubectl %s --server=%s --certificate-authority=%s/%s --token="$TOKEN" "$@"`,
+	script := fmt.Sprintf(`exec kubectl %s --server=%s --certificate-authority=%s/%s --token="$TOKEN" "$@"`,
 		verb, apiServer, secretPath, caKey)
-
-	var script string
-	if a.Format == resolve.FormatKustomize {
-		// Capture the streamed kustomization, build it server-side, and
-		// pipe the rendered manifest into the apply.
-		script = `d=$(mktemp -d) && cat > "$d/kustomization.yaml" && kubectl kustomize "$d" | ` + apply
-	} else {
-		script = "exec " + apply
-	}
 
 	args := []string{"sh", "-c", script, "sh"}
 
@@ -372,29 +408,35 @@ func (a *Applier) exec(ctx context.Context, name string) error {
 	if a.Verbosity > 0 {
 		args = append(args, fmt.Sprintf("-v=%d", a.Verbosity))
 	}
-	slog.Debug("exec in runner", "pod", name, "args", args, "manifestBytes", len(a.Manifest))
+	slog.Debug("apply in runner", "pod", pod, "args", args)
 
+	if err := a.stream(ctx, pod, args, manifest, a.Out, a.Err); err != nil {
+		return fmt.Errorf("remote: applying manifest: %w", err)
+	}
+	return nil
+}
+
+// stream execs command in pod, wiring the given stdin/stdout/stderr to the
+// remote process.
+func (a *Applier) stream(ctx context.Context, pod string, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	req := a.client.CoreV1().RESTClient().Post().
-		Resource("pods").Name(name).Namespace(a.Namespace).SubResource("exec").
+		Resource("pods").Name(pod).Namespace(a.Namespace).SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
-			Command: args,
-			Stdin:   true,
-			Stdout:  true,
-			Stderr:  true,
+			Command: command,
+			Stdin:   stdin != nil,
+			Stdout:  stdout != nil,
+			Stderr:  stderr != nil,
 		}, scheme.ParameterCodec)
 
 	executor, err := remotecommand.NewSPDYExecutor(a.RESTConfig, "POST", req.URL())
 	if err != nil {
 		return fmt.Errorf("remote: building executor: %w", err)
 	}
-	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdin:  bytes.NewReader(a.Manifest),
-		Stdout: a.Out,
-		Stderr: a.Err,
-	}); err != nil {
-		return fmt.Errorf("remote: applying manifest: %w", err)
-	}
-	return nil
+	return executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+	})
 }
 
 func (a *Applier) deletePod(name string) {

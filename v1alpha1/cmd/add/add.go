@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/lmittmann/tint"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/kustomize"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/remote"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/git"
@@ -239,8 +240,15 @@ func (a *Add) Run() error {
 	}
 
 	switch a.Format {
-	case resolve.FormatYAML, resolve.FormatKustomize:
-		// yaml is applied as-is; a kustomization is built server-side.
+	case resolve.FormatYAML:
+		// Applied as-is.
+	case resolve.FormatKustomize:
+		// Built server-side; relative resources are first rebased onto
+		// the kustomization's URL so the builder can fetch them.
+		body, err = kustomize.Rebase(body, manifest)
+		if err != nil {
+			return err
+		}
 	default:
 		// TODO: render helm charts to yaml, then apply
 		return fmt.Errorf("resolved %s to %s (%s): installing %s is not implemented yet", a.Resource, manifest, a.Format, a.Format)

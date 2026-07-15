@@ -3,4 +3,4 @@ kind: Kustomization
 
 resources:
   - https://scaffoldly.github.io/kubectl-add/nginx.yaml
-  - https://scaffoldly.github.io/kubectl-add/configmap.yaml
+  - ./configmap.yaml

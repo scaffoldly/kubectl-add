@@ -74,9 +74,9 @@ kubectl add https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/e
 
 ### Helm
 
-A chart repository (its `index.yaml` is sniffed automatically), a GitHub repo
-(defaults to the latest release and finds the chart), or a chart served as
-loose `Chart.yaml` files over HTTP:
+A chart repository (its `index.yaml` is sniffed automatically), an OCI
+registry, a GitHub repo (defaults to the latest release and finds the chart),
+or a chart served as loose `Chart.yaml` files over HTTP:
 
 ```sh
 # a chart repository (picks the chart, latest version)
@@ -84,6 +84,9 @@ kubectl add https://kubernetes.github.io/ingress-nginx
 
 # pin the chart and version from a repository
 kubectl add "https://kubernetes.github.io/ingress-nginx?chart=ingress-nginx&version=4.15.1"
+
+# an OCI registry (latest tag, or pin with :tag or ?version=)
+kubectl add oci://registry-1.docker.io/bitnamicharts/nginx
 
 # a GitHub repo
 kubectl add kubernetes/ingress-nginx
@@ -107,7 +110,7 @@ What `kubectl add` can resolve and install, by source and format:
 | ------------------------------------------------------ | ------- | ---------------------------------- | ---------------------------------------------------- |
 | HTTP(S) URL                                            | ✅      | ✅                                 | ✅ &nbsp;loose `Chart.yaml`, repo `index.yaml`       |
 | GitHub repo &nbsp;(`org/repo`, `.git`, `github.com/…`) | 🚧 [#3] | ✅ &nbsp;root `kustomization.yaml` | ✅ &nbsp;chart under `charts/` at the latest release |
-| OCI &nbsp;(`oci://`)                                   | —       | —                                  | 🚧 [#4]                                              |
+| OCI &nbsp;(`oci://`)                                   | —       | —                                  | ✅ &nbsp;registry, latest tag or pinned              |
 
 ✅ supported &nbsp;·&nbsp; 🚧 planned &nbsp;·&nbsp; — n/a
 
@@ -116,13 +119,12 @@ Notes:
 - Kustomizations sourced from a URL support relative resources, `bases`, nested
   kustomizations, and remote git/http references. Some kustomize fields that
   reference local files are not yet materialized ([#1]).
-- Helm charts install from loose files or an HTTP chart repository; OCI-hosted
-  charts are not fetched yet ([#4]). `?chart=` and `?version=` pin the selection
-  from a repository.
+- Helm charts install from loose files, an HTTP chart repository, or an OCI
+  registry (including repositories whose `index.yaml` points at `oci://`).
+  `?chart=` and `?version=` pin the selection.
 
 [#1]: https://github.com/scaffoldly/kubectl-add/issues/1
 [#3]: https://github.com/scaffoldly/kubectl-add/issues/3
-[#4]: https://github.com/scaffoldly/kubectl-add/issues/4
 
 ## How it works
 

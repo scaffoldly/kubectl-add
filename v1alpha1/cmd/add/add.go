@@ -293,8 +293,8 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 	slog.Info("discovering chart", "url", chartURL)
 	var chart *helm.Chart
 	switch {
-	case strings.HasSuffix(chartURL.Path, ".tgz"):
-		// A packaged chart, fetched and loaded directly.
+	case chartURL.Scheme == "oci" || strings.HasSuffix(chartURL.Path, ".tgz"):
+		// A packaged chart (OCI registry or .tgz), pulled and loaded directly.
 		chart, err = helm.DiscoverArchive(ctx, chartURL, a.get)
 	case path.Base(chartURL.Path) == "Chart.yaml" || path.Base(chartURL.Path) == "Chart.yml":
 		// Loose chart files served over HTTP, discovered by convention.

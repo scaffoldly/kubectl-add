@@ -64,14 +64,22 @@ func DiscoverRepo(ctx context.Context, repoURL *url.URL, fetch Fetch) (*Chart, e
 	return DiscoverArchive(ctx, tgz, fetch)
 }
 
-// DiscoverArchive loads a packaged chart (.tgz) fetched from u.
+// DiscoverArchive loads a packaged chart (.tgz) from u, over HTTP or — when
+// u is an oci:// reference — pulled from an OCI registry.
 func DiscoverArchive(ctx context.Context, u *url.URL, fetch Fetch) (*Chart, error) {
-	data, found, err := fetch(ctx, u)
-	if err != nil {
-		return nil, fmt.Errorf("helm: fetching chart archive: %w", err)
-	}
-	if !found {
-		return nil, fmt.Errorf("helm: no chart archive at %s", u)
+	var data []byte
+	if u.Scheme == "oci" {
+		var err error
+		if data, err = pullChart(u); err != nil {
+			return nil, err
+		}
+	} else {
+		found, err := false, error(nil)
+		if data, found, err = fetch(ctx, u); err != nil {
+			return nil, fmt.Errorf("helm: fetching chart archive: %w", err)
+		} else if !found {
+			return nil, fmt.Errorf("helm: no chart archive at %s", u)
+		}
 	}
 
 	ch, err := loader.LoadArchive(bytes.NewReader(data))

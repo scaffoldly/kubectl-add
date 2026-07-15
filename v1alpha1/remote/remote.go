@@ -1,14 +1,17 @@
-// Package remote runs kubectl apply inside the cluster: it delivers the
-// manifest through a ConfigMap, runs a short-lived pod carrying an
-// impersonation-only ServiceAccount, and execs kubectl into it impersonating
-// the local caller so the apply is authorized and audited as the user.
+// Package remote runs kubectl apply inside the cluster: it mints a
+// short-lived ServiceAccount token into a Secret, runs a short-lived pod
+// that authenticates with that token (fully file-less — no kubeconfig, just
+// --server/--certificate-authority/--token flags), and streams the manifest
+// to kubectl over the exec's stdin.
 package remote
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
@@ -27,37 +30,19 @@ import (
 const (
 	// DefaultRunnerImage carries kubectl; override with WithRunnerImage.
 	DefaultRunnerImage = "bitnami/kubectl:latest"
-	// manifestPath is where the ConfigMap is mounted in the runner pod.
-	manifestPath = "/manifests"
-	// manifestKey is the ConfigMap key holding the manifest.
-	manifestKey = "manifest.yaml"
-	// kubeconfigKey is the ConfigMap key holding the in-cluster kubeconfig.
-	kubeconfigKey = "kubeconfig"
+	// apiServer is the in-cluster API server address.
+	apiServer = "https://kubernetes.default.svc"
+	// secretPath is where the token/CA Secret is mounted in the pod.
+	secretPath = "/auth"
+	// tokenKey and caKey are the Secret keys holding the credentials.
+	tokenKey = "token"
+	caKey    = "ca.crt"
+	// tokenTTL bounds the minted ServiceAccount token's lifetime.
+	tokenTTL = 10 * time.Minute
 
-	saName          = "kubectl-add"
-	impersonateRole = "kubectl-add:impersonator"
-
-	// inClusterKubeconfig points kubectl at the API server using the
-	// runner's auto-mounted ServiceAccount token. Identity beyond this
-	// base auth comes from the --as impersonation flags.
-	inClusterKubeconfig = `apiVersion: v1
-kind: Config
-clusters:
-- name: in-cluster
-  cluster:
-    server: https://kubernetes.default.svc
-    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-users:
-- name: in-cluster
-  user:
-    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-contexts:
-- name: in-cluster
-  context:
-    cluster: in-cluster
-    user: in-cluster
-current-context: in-cluster
-`
+	saName      = "kubectl-add"
+	adminRole   = "cluster-admin"
+	bindingName = "kubectl-add:apply"
 )
 
 // Applier runs a server-side kubectl apply of Manifest.
@@ -72,8 +57,8 @@ type Applier struct {
 	Remove bool
 	// ConfigFlags supplies kubectl's standard flags; the request-scoped
 	// ones (namespace, request-timeout) are forwarded to the remote
-	// kubectl. Connection/auth flags are not: the remote connects
-	// in-cluster.
+	// kubectl. Connection/auth flags are not: the remote authenticates
+	// with the minted ServiceAccount token.
 	ConfigFlags *genericclioptions.ConfigFlags
 
 	// Out/Err receive the remote kubectl's streams.
@@ -158,23 +143,27 @@ func (a *Applier) Run(ctx context.Context) error {
 	}
 	a.client = client
 
-	user, groups, err := a.whoami(ctx)
+	if err := a.ensureRBAC(ctx); err != nil {
+		return err
+	}
+
+	token, err := a.mintToken(ctx)
 	if err != nil {
 		return err
 	}
-	slog.Info("impersonating", "user", user, "groups", len(groups))
 
-	if err := a.ensureRBAC(ctx); err != nil {
+	ca, err := a.caCert()
+	if err != nil {
 		return err
 	}
 
 	runID := rand.String(5)
 	name := "kubectl-add-" + runID
 
-	if err := a.createConfigMap(ctx, name); err != nil {
+	if err := a.createSecret(ctx, name, token, ca); err != nil {
 		return err
 	}
-	defer a.deleteConfigMap(name)
+	defer a.deleteSecret(name)
 
 	if err := a.createPod(ctx, name); err != nil {
 		return err
@@ -185,92 +174,112 @@ func (a *Applier) Run(ctx context.Context) error {
 		return err
 	}
 
-	return a.exec(ctx, name, user, groups)
+	return a.exec(ctx, name)
 }
 
-// whoami asks the API server who the local credentials authenticate as, so
-// the remote kubectl can impersonate the same user and groups.
-func (a *Applier) whoami(ctx context.Context) (string, []string, error) {
-	review, err := a.client.AuthenticationV1().SelfSubjectReviews().Create(ctx, &authnv1.SelfSubjectReview{}, metav1.CreateOptions{})
-	if err != nil {
-		return "", nil, fmt.Errorf("remote: SelfSubjectReview: %w", err)
-	}
-	user := review.Status.UserInfo.Username
-	if user == "" {
-		return "", nil, fmt.Errorf("remote: could not determine local identity")
-	}
-	return user, review.Status.UserInfo.Groups, nil
-}
-
-// ensureRBAC creates the impersonation-only ServiceAccount, ClusterRole, and
-// binding. Idempotent: already-existing objects are left as-is.
+// ensureRBAC creates the runner ServiceAccount and binds it to cluster-admin
+// so its minted token can apply arbitrary manifests. Idempotent.
 func (a *Applier) ensureRBAC(ctx context.Context) error {
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: a.Namespace}}
 	if _, err := a.client.CoreV1().ServiceAccounts(a.Namespace).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("remote: creating service account: %w", err)
 	}
 
-	role := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{Name: impersonateRole},
-		Rules: []rbacv1.PolicyRule{{
-			APIGroups: []string{""},
-			Resources: []string{"users", "groups", "serviceaccounts"},
-			Verbs:     []string{"impersonate"},
-		}},
-	}
-	if _, err := a.client.RbacV1().ClusterRoles().Create(ctx, role, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("remote: creating cluster role: %w", err)
-	}
-
 	binding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: impersonateRole + ":" + a.Namespace},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: impersonateRole},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName + ":" + a.Namespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: adminRole},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: a.Namespace}},
 	}
 	if _, err := a.client.RbacV1().ClusterRoleBindings().Create(ctx, binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("remote: creating cluster role binding: %w", err)
 	}
 
-	slog.Debug("ensured impersonation rbac", "serviceaccount", saName, "namespace", a.Namespace)
+	slog.Debug("ensured runner rbac", "serviceaccount", saName, "role", adminRole, "namespace", a.Namespace)
 	return nil
 }
 
-func (a *Applier) createConfigMap(ctx context.Context, name string) error {
-	cm := &corev1.ConfigMap{
+// mintToken requests a short-lived token for the runner ServiceAccount via
+// the TokenRequest API.
+func (a *Applier) mintToken(ctx context.Context) (string, error) {
+	seconds := int64(tokenTTL.Seconds())
+	req := &authnv1.TokenRequest{Spec: authnv1.TokenRequestSpec{ExpirationSeconds: &seconds}}
+	resp, err := a.client.CoreV1().ServiceAccounts(a.Namespace).CreateToken(ctx, saName, req, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("remote: minting token: %w", err)
+	}
+	slog.Info("minted token", "serviceaccount", saName, "ttl", tokenTTL.String())
+	return resp.Status.Token, nil
+}
+
+// caCert returns the cluster CA bundle from the local REST config, used by
+// the remote kubectl to verify the API server.
+func (a *Applier) caCert() ([]byte, error) {
+	if len(a.RESTConfig.CAData) > 0 {
+		return a.RESTConfig.CAData, nil
+	}
+	if a.RESTConfig.CAFile != "" {
+		ca, err := os.ReadFile(a.RESTConfig.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("remote: reading CA file: %w", err)
+		}
+		return ca, nil
+	}
+	return nil, fmt.Errorf("remote: no cluster CA in REST config")
+}
+
+// createSecret stores the minted token and CA bundle. The token is injected
+// into the pod as an env var (not argv), so it never appears in process
+// listings or logs.
+func (a *Applier) createSecret(ctx context.Context, name string, token string, ca []byte) error {
+	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: a.Namespace},
-		Data: map[string]string{
-			manifestKey:   string(a.Manifest),
-			kubeconfigKey: inClusterKubeconfig,
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			tokenKey: []byte(token),
+			caKey:    ca,
 		},
 	}
-	if _, err := a.client.CoreV1().ConfigMaps(a.Namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
-		return fmt.Errorf("remote: creating configmap: %w", err)
+	if _, err := a.client.CoreV1().Secrets(a.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("remote: creating secret: %w", err)
 	}
-	slog.Debug("created manifest configmap", "name", name)
+	slog.Debug("created auth secret", "name", name)
 	return nil
 }
 
 func (a *Applier) createPod(ctx context.Context, name string) error {
+	noAutomount := false
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: a.Namespace},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: saName,
-			RestartPolicy:      corev1.RestartPolicyNever,
+			// The runner authenticates with the minted token from the
+			// Secret, not the pod's own projected SA token.
+			AutomountServiceAccountToken: &noAutomount,
+			RestartPolicy:                corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
 				Name:    "kubectl",
 				Image:   a.RunnerImage,
 				Command: []string{"sleep", "3600"},
+				Env: []corev1.EnvVar{{
+					Name: "TOKEN",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: name},
+							Key:                  tokenKey,
+						},
+					},
+				}},
 				VolumeMounts: []corev1.VolumeMount{{
-					Name:      "manifest",
-					MountPath: manifestPath,
+					Name:      "auth",
+					MountPath: secretPath,
 					ReadOnly:  true,
 				}},
 			}},
 			Volumes: []corev1.Volume{{
-				Name: "manifest",
+				Name: "auth",
 				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: name},
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: name,
+						Items:      []corev1.KeyToPath{{Key: caKey, Path: caKey}},
 					},
 				},
 			}},
@@ -314,58 +323,40 @@ func podReady(pod *corev1.Pod) bool {
 	return len(pod.Status.ContainerStatuses) > 0
 }
 
-// exec runs kubectl apply inside the runner, impersonating the caller, and
-// streams its output back.
-func (a *Applier) exec(ctx context.Context, name, user string, groups []string) error {
+// exec runs kubectl inside the runner, file-less: it authenticates with the
+// minted token (via $TOKEN) and the mounted CA, and reads the manifest from
+// stdin. The fixed connection flags plus "$@" run through sh so $TOKEN is
+// expanded from the environment; caller args arrive as real argv via "$@",
+// so they cannot be reinterpreted by the shell.
+func (a *Applier) exec(ctx context.Context, name string) error {
 	verb := "apply"
 	if a.Remove {
 		verb = "delete"
 	}
-	command := []string{"kubectl", verb}
-
-	// Layer the caller's kubectl flags first. Connection/auth flags
-	// (--server, --context, --kubeconfig, --token, certs) are excluded:
-	// the remote kubectl connects in-cluster.
-	if f := a.ConfigFlags; f != nil {
-		if f.Namespace != nil && *f.Namespace != "" {
-			command = append(command, "--namespace", *f.Namespace)
-		}
-		if f.Timeout != nil && *f.Timeout != "" && *f.Timeout != "0" {
-			command = append(command, "--request-timeout", *f.Timeout)
-		}
-		if f.Impersonate != nil && *f.Impersonate != "" {
-			command = append(command, "--as", *f.Impersonate)
-		}
-		if f.ImpersonateGroup != nil {
-			for _, group := range *f.ImpersonateGroup {
-				command = append(command, "--as-group", group)
-			}
-		}
-		if f.ImpersonateUID != nil && *f.ImpersonateUID != "" {
-			command = append(command, "--as-uid", *f.ImpersonateUID)
-		}
-	}
-
-	// Then our execution flags, which override the caller's on conflict:
-	// the in-cluster kubeconfig, target namespace, and resolved identity.
-	command = append(command,
-		"--kubeconfig", manifestPath+"/"+kubeconfigKey,
-		"-f", manifestPath+"/"+manifestKey,
-		"--namespace", a.Namespace,
-		"--as", user,
+	script := fmt.Sprintf(
+		`exec kubectl %s --server=%s --certificate-authority=%s/%s --token="$TOKEN" "$@"`,
+		verb, apiServer, secretPath, caKey,
 	)
-	for _, group := range groups {
-		command = append(command, "--as-group", group)
+
+	args := []string{"sh", "-c", script, "sh"}
+
+	// Caller's request-scoped flags first; our execution flags override.
+	if f := a.ConfigFlags; f != nil {
+		if f.Timeout != nil && *f.Timeout != "" && *f.Timeout != "0" {
+			args = append(args, "--request-timeout", *f.Timeout)
+		}
 	}
+	args = append(args, "-f", "-", "--namespace", a.Namespace)
 	if a.Verbosity > 0 {
-		command = append(command, fmt.Sprintf("-v=%d", a.Verbosity))
+		args = append(args, fmt.Sprintf("-v=%d", a.Verbosity))
 	}
-	slog.Debug("exec in runner", "pod", name, "command", command)
+	slog.Debug("exec in runner", "pod", name, "args", args, "manifestBytes", len(a.Manifest))
 
 	req := a.client.CoreV1().RESTClient().Post().
 		Resource("pods").Name(name).Namespace(a.Namespace).SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
-			Command: command,
+			Command: args,
+			Stdin:   true,
 			Stdout:  true,
 			Stderr:  true,
 		}, scheme.ParameterCodec)
@@ -374,7 +365,11 @@ func (a *Applier) exec(ctx context.Context, name, user string, groups []string) 
 	if err != nil {
 		return fmt.Errorf("remote: building executor: %w", err)
 	}
-	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: a.Out, Stderr: a.Err}); err != nil {
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  bytes.NewReader(a.Manifest),
+		Stdout: a.Out,
+		Stderr: a.Err,
+	}); err != nil {
 		return fmt.Errorf("remote: applying manifest: %w", err)
 	}
 	return nil
@@ -386,8 +381,8 @@ func (a *Applier) deletePod(name string) {
 	}
 }
 
-func (a *Applier) deleteConfigMap(name string) {
-	if err := a.client.CoreV1().ConfigMaps(a.Namespace).Delete(context.Background(), name, metav1.DeleteOptions{}); err != nil {
-		slog.Debug("cleanup: delete configmap", "name", name, "error", err)
+func (a *Applier) deleteSecret(name string) {
+	if err := a.client.CoreV1().Secrets(a.Namespace).Delete(context.Background(), name, metav1.DeleteOptions{}); err != nil {
+		slog.Debug("cleanup: delete secret", "name", name, "error", err)
 	}
 }

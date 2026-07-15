@@ -13,6 +13,17 @@ cluster.
 <!-- TODO: screencast GIF -->
 <!-- TODO: resolution/server-side-apply diagram -->
 
+## Features
+
+- 🧠 **Smart resolution** — point it at a YAML URL, a kustomization, a helm chart, a chart repo, or a GitHub repo; it sniffs out what it is.
+- ☁️ **Server-side apply** — runs `kubectl` inside the cluster; your local kubeconfig is never copied in.
+- 🔑 **Short-lived credentials** — mints an ephemeral token per run, cleaned up when it's done.
+- 🎛️ **Kustomize, built in-cluster** — relative resources, `bases`, nested kustomizations, and remote git/http references all resolve.
+- ⎈ **Helm, no tiller, no fuss** — renders charts client-side; installs from loose files, an HTTP chart repository, or a GitHub repo.
+- 📌 **Pin what you want** — `?chart=` and `?version=` select straight from a repository index.
+- 🗑️ **Reversible** — `--remove` deletes exactly what you added.
+- 🪶 **Feels native** — one command, standard kubectl flags (`--namespace`, `-v`, kubeconfig).
+
 ## Getting Started
 
 ### Setup

@@ -268,13 +268,27 @@ func (a *Add) Run() error {
 		Run(ctx)
 }
 
-// fetch downloads the manifest at u.
+// maxRedirects bounds the redirect chain when fetching a manifest.
+const maxRedirects = 10
+
+// fetch downloads the manifest at u, following redirects (e.g. k8s.io
+// short links to raw content) up to maxRedirects hops.
 func (a *Add) fetch(ctx context.Context, u *url.URL) ([]byte, error) {
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			slog.Debug("following redirect", "from", via[len(via)-1].URL, "to", req.URL, "hop", len(via))
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxRedirects)
+			}
+			return nil
+		},
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request for %s: %w", u, err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", u, err)
 	}

@@ -71,11 +71,11 @@ finds the chart):
 # loose Chart.yaml files
 kubectl add https://scaffoldly.github.io/kubectl-add/helm/Chart.yaml
 
-# a chart repository
-kubectl add https://metallb.github.io/metallb
+# a chart repository (picks the chart, latest version)
+kubectl add https://kubernetes.github.io/ingress-nginx
 
 # pin the chart and version from a repository
-kubectl add "https://metallb.github.io/metallb?chart=metallb&version=0.16.1"
+kubectl add "https://kubernetes.github.io/ingress-nginx?chart=ingress-nginx&version=4.15.1"
 
 # a GitHub repo
 kubectl add kubernetes/ingress-nginx

@@ -225,8 +225,10 @@ func (a *Applier) pipeKustomize(ctx context.Context, builder, applier string) er
 		// Unpack the streamed kustomization tree, build the kustomization
 		// dir, write the rendered manifest to the pipe for the applier.
 		// The dir arrives as $1 (real argv) so it can't be reinterpreted
-		// by the shell.
-		script := `d=$(mktemp -d) && tar -x -C "$d" && exec kubectl kustomize "$d/$1"`
+		// by the shell. LoadRestrictionsNone lets in-site ../ resources
+		// resolve outside the build dir; the tar is host-clamped, so there
+		// is no real filesystem escape.
+		script := `d=$(mktemp -d) && tar -x -C "$d" && exec kubectl kustomize --load-restrictor=LoadRestrictionsNone "$d/$1"`
 		command := []string{"sh", "-c", script, "sh", a.Dir}
 		err := a.stream(ctx, builder, command, bytes.NewReader(a.Manifest), pw, a.Err)
 		pw.CloseWithError(err)

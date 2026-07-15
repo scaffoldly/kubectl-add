@@ -89,13 +89,15 @@ kubectl add "https://kubernetes.github.io/ingress-nginx?chart=ingress-nginx&vers
 kubectl add kubernetes/ingress-nginx
 ```
 
-Stage a chart's values for editing before installing with `--prepare`:
+Installing a chart opens its values in your editor first (the reconciled
+ConfigMap); save to continue, or skip the edit with `--no-edit`:
 
 ```sh
-kubectl add https://metallb.github.io/metallb --prepare
-kubectl edit configmap kubectl-add-values-<hash> -n <namespace>
-kubectl add https://metallb.github.io/metallb
+kubectl add https://kubernetes.github.io/ingress-nginx            # edits, then installs
+kubectl add https://kubernetes.github.io/ingress-nginx --no-edit  # installs with saved values
 ```
+
+The edit is skipped automatically when stdin is not a terminal (scripts, CI).
 
 ## Compatibility
 
@@ -156,8 +158,9 @@ token) will error rather than silently escalate.
 
 The values used for a chart are persisted in a ConfigMap
 (`kubectl-add-values-<hash>`) in the target namespace, keyed by the chart URL.
-The first install stores the chart's defaults; later installs reuse them. Use
-`--prepare` to stage and `kubectl edit` them before installing.
+The first install stores the chart's defaults; later installs reuse them. Each
+install opens the ConfigMap in your editor before rendering (unless `--no-edit`
+or a non-interactive stdin), so you can review and adjust the values.
 
 ### Verbose output
 

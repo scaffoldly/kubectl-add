@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 
@@ -44,9 +45,10 @@ type Add struct {
 	Verbose bool
 	// Remove deletes the resolved resource instead of adding it.
 	Remove bool
-	// Prepare stages a format's editable inputs (e.g. helm values) as a
-	// ConfigMap for review before install, without installing.
-	Prepare bool
+	// NoEdit skips the interactive edit of an install's editable inputs
+	// before applying. The edit is also skipped when stdin is not a
+	// terminal.
+	NoEdit bool
 	// ConfigFlags supplies kubectl's standard connection flags.
 	ConfigFlags *genericclioptions.ConfigFlags
 	// RESTConfig is the cluster connection config.
@@ -95,8 +97,8 @@ func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
 	a.WithVerbose(verbose)
 	remove, _ := cmd.Flags().GetBool("remove")
 	a.WithRemove(remove)
-	prepare, _ := cmd.Flags().GetBool("prepare")
-	a.WithPrepare(prepare)
+	noEdit, _ := cmd.Flags().GetBool("no-edit")
+	a.WithNoEdit(noEdit)
 	a.WithResource(args[0])
 
 	if a.ConfigFlags != nil {
@@ -188,10 +190,9 @@ func (a *Add) WithRemove(remove bool) *Add {
 	return a
 }
 
-// WithPrepare stages a format's editable inputs for review without
-// installing.
-func (a *Add) WithPrepare(prepare bool) *Add {
-	a.Prepare = prepare
+// WithNoEdit skips the interactive edit of an install's editable inputs.
+func (a *Add) WithNoEdit(noEdit bool) *Add {
+	a.NoEdit = noEdit
 	return a
 }
 
@@ -255,10 +256,6 @@ func (a *Add) Run() error {
 		return a.installHelm(ctx, manifest)
 	}
 
-	if a.Prepare {
-		return fmt.Errorf("--prepare is not supported for %s", a.Format)
-	}
-
 	slog.Info("fetching", "url", manifest)
 	body, err := a.fetch(ctx, manifest)
 	if err != nil {
@@ -284,9 +281,9 @@ func (a *Add) Run() error {
 	return a.apply(ctx, manifest, body, a.Format, kustomizeDir)
 }
 
-// installHelm discovers the chart, renders it with persisted or default
-// values, and applies the result — or, with --prepare, only stages the
-// values for editing.
+// installHelm discovers the chart, reconciles its values ConfigMap (opening
+// an interactive edit unless suppressed), renders with those values, and
+// applies the result.
 func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 	client, err := kubernetes.NewForConfig(a.RESTConfig)
 	if err != nil {
@@ -310,20 +307,14 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 		return err
 	}
 
-	valuesName := helm.ValuesName(chartURL.String())
-
-	if a.Prepare {
-		if _, exists, err := helm.LoadValues(ctx, client, a.Namespace, valuesName); err != nil {
-			return err
-		} else if !exists {
-			if err := helm.StoreValues(ctx, client, a.Namespace, valuesName, chart.DefaultValues); err != nil {
-				return err
-			}
-		}
-		slog.Info("staged values", "configmap", valuesName, "namespace", a.Namespace)
-		slog.Info(fmt.Sprintf("edit with: kubectl edit configmap %s -n %s", valuesName, a.Namespace))
-		return nil
+	// Key the values on the chart's identity minus its version, so edited
+	// values persist across version bumps (?chart= stays; ?version= drops).
+	valuesID := *chartURL
+	if q := valuesID.Query(); q.Has("version") {
+		q.Del("version")
+		valuesID.RawQuery = q.Encode()
 	}
+	valuesName := helm.ValuesName(valuesID.String())
 
 	values, exists, err := helm.LoadValues(ctx, client, a.Namespace, valuesName)
 	if err != nil {
@@ -337,6 +328,17 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 		slog.Debug("persisted default values", "configmap", valuesName)
 	} else {
 		slog.Info("using persisted values", "configmap", valuesName)
+	}
+
+	// Let the user review/edit the reconciled values before install. Skipped
+	// with --no-edit or when stdin is not a terminal (scripts, CI).
+	if !a.NoEdit && term.IsTerminal(int(os.Stdin.Fd())) {
+		if err := a.editConfigMap(ctx, valuesName); err != nil {
+			return err
+		}
+		if values, _, err = helm.LoadValues(ctx, client, a.Namespace, valuesName); err != nil {
+			return err
+		}
 	}
 
 	// Render against the target cluster's version so charts with a
@@ -358,6 +360,29 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 
 	// The chart is rendered to plain yaml; apply it like any manifest.
 	return a.apply(ctx, chartURL, rendered, resolve.FormatYAML, "")
+}
+
+// editConfigMap opens the named ConfigMap in the user's editor via
+// `kubectl edit`, forwarding the caller's connection flags so it targets the
+// same cluster and context. The editor takes over stdio.
+func (a *Add) editConfigMap(ctx context.Context, name string) error {
+	args := []string{"edit", "configmap", name, "--namespace", a.Namespace}
+	if f := a.ConfigFlags; f != nil {
+		if f.KubeConfig != nil && *f.KubeConfig != "" {
+			args = append(args, "--kubeconfig", *f.KubeConfig)
+		}
+		if f.Context != nil && *f.Context != "" {
+			args = append(args, "--context", *f.Context)
+		}
+	}
+
+	slog.Info("editing values", "configmap", name, "namespace", a.Namespace)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("editing values %s: %w", name, err)
+	}
+	return nil
 }
 
 // apply streams the manifest to the server-side applier.

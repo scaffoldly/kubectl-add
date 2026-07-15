@@ -4,4 +4,4 @@ kind: Kustomization
 resources:
   - https://scaffoldly.github.io/kubectl-add/yaml/nginx.yaml
   - ./configmap.yaml
-  - https://scaffoldly.github.io/kubectl-add/yaml/secret.yaml
+  - https://github.com/scaffoldly/kubectl-add.git//test/e2e/kustomization/addons?ref=main

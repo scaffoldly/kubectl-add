@@ -5,6 +5,12 @@ on:
     types:
       - published
 
+concurrency:
+  # Queue rather than cancel: canceling a half-finished publish (krew index
+  # PR) can leave the release partially propagated.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   krew:
     runs-on: ubuntu-latest

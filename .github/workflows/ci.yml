@@ -40,11 +40,11 @@ jobs:
           - windows-11-arm
           - macos-26-intel
           - macos-26
-        # "min" reads the floor from go.mod (the `go X.Y` directive); "stable"
-        # is whatever setup-go's `stable` alias resolves to. Keeping "min"
-        # symbolic avoids drift between go.mod and the workflow when the floor
-        # is bumped.
-        go: [min, stable]
+        # kubectl-add ships a binary, not a library — nobody compiles it
+        # against the go.mod floor, so only "stable" is validated. ("min"
+        # still resolves symbolically in the step below if a floor cell is
+        # ever reintroduced.)
+        go: [stable]
     defaults:
       run:
         # bash on Windows runners comes from git-for-windows (MSYS) and matches

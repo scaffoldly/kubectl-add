@@ -73,16 +73,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      # go-release-action archives a pre-built binary and uploads it — it does
+      # not build, and has no ldflags input — so build here, cross-compiling
+      # per GOOS/GOARCH with the version injected. -s -w strip the symbol table
+      # and DWARF; Version is the tag (a semver, for self-update comparison).
+      # No -o: `go build` names the binary kubectl-add (kubectl-add.exe on
+      # windows), which is what the action expects.
+      - run: >-
+          go build
+          -ldflags "-s -w
+          -X github.com/scaffoldly/kubectl-add/v1alpha1/version.Version=${{ needs.create.outputs.draft-release-name }}
+          -X github.com/scaffoldly/kubectl-add/v1alpha1/version.Commit=${{ github.sha }}"
+          ./cmd/kubectl-add
       - uses: int128/go-release-action@9e1d6ec29fc6ffc2ba55f631baf4a73017d228e1 # v2.5.0
         with:
           binary: kubectl-add
           release-name: ${{ needs.create.outputs.draft-release-name }}
-          # -s -w strip the symbol table and DWARF for a smaller binary.
-          # Inject the tag (a semver, for self-update comparison) and the SHA.
-          ldflags: >-
-            -s -w
-            -X github.com/scaffoldly/kubectl-add/v1alpha1/version.Version=${{ needs.create.outputs.draft-release-name }}
-            -X github.com/scaffoldly/kubectl-add/v1alpha1/version.Commit=${{ github.sha }}
 
   # After every platform archive is uploaded to the draft, sign each one:
   # keyless cosign (proves who published) plus SLSA build provenance (attests

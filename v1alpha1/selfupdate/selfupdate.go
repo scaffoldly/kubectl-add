@@ -43,12 +43,14 @@ const (
 // only on installs kubectl-add owns. It is fail-open: any problem (opt-out,
 // managed install, network, verification) is logged at debug and returns
 // without disrupting the caller's command. Disabled by KUBECTL_ADD_NO_AUTO_UPDATE.
-func AutoUpdate(ctx context.Context, current string, client *http.Client) {
+// A non-empty token authenticates the GitHub API check to lift its
+// unauthenticated rate limit.
+func AutoUpdate(ctx context.Context, current, token string, client *http.Client) {
 	if os.Getenv(envOptOut) != "" {
 		slog.Debug("auto-update disabled", "env", envOptOut)
 		return
 	}
-	if err := update(ctx, current, client, false); err != nil {
+	if err := update(ctx, current, token, client, false); err != nil {
 		slog.Debug("auto-update skipped", "err", err)
 	}
 }
@@ -57,11 +59,11 @@ func AutoUpdate(ctx context.Context, current string, client *http.Client) {
 // throttle and the env opt-out (but not the hard guards on managed or
 // non-writable installs). It reports why it could not update, or nil on
 // success or already-current.
-func Update(ctx context.Context, current string, client *http.Client) error {
-	return update(ctx, current, client, true)
+func Update(ctx context.Context, current, token string, client *http.Client) error {
+	return update(ctx, current, token, client, true)
 }
 
-func update(ctx context.Context, current string, client *http.Client, force bool) error {
+func update(ctx context.Context, current, token string, client *http.Client, force bool) error {
 	cur, err := semver.NewVersion(current)
 	if err != nil {
 		return fmt.Errorf("this is not a release build (version %q); install a release to enable updates", current)
@@ -95,7 +97,7 @@ func update(ctx context.Context, current string, client *http.Client, force bool
 		markChecked()
 	}
 
-	tag, err := latestTag(ctx, client)
+	tag, err := latestTag(ctx, client, token)
 	if err != nil {
 		return fmt.Errorf("checking latest release: %w", err)
 	}
@@ -125,7 +127,7 @@ func update(ctx context.Context, current string, client *http.Client, force bool
 		return nil
 	}
 
-	if err := apply(ctx, client, inst, latest, tag); err != nil {
+	if err := apply(ctx, client, token, inst, latest, tag); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "kubectl-add self-updated v%s → %s\n", cur.String(), tag)
@@ -221,24 +223,24 @@ func managedInstall(exe string) (string, bool) {
 
 // apply downloads the release archive for this platform, verifies it, writes
 // the new versioned binary beside the current one, and repoints the symlink.
-func apply(ctx context.Context, client *http.Client, inst *install, latest *semver.Version, tag string) error {
+func apply(ctx context.Context, client *http.Client, token string, inst *install, latest *semver.Version, tag string) error {
 	asset := fmt.Sprintf("kubectl-add_%s_%s.zip", runtime.GOOS, runtime.GOARCH)
 	base := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
 
-	archive, err := download(ctx, client, base)
+	archive, err := download(ctx, client, base, token)
 	if err != nil {
 		return fmt.Errorf("downloading %s: %w", asset, err)
 	}
 
 	// Checksum: a cheap integrity pre-check against the published .sha256.
-	if sum, err := download(ctx, client, base+".sha256"); err != nil {
+	if sum, err := download(ctx, client, base+".sha256", token); err != nil {
 		return fmt.Errorf("downloading checksum: %w", err)
 	} else if err := verifyChecksum(archive, sum); err != nil {
 		return err
 	}
 
 	// Signature: the trust anchor. Never swap an archive this can't prove.
-	sig, err := download(ctx, client, base+".sigstore")
+	sig, err := download(ctx, client, base+".sigstore", token)
 	if err != nil {
 		return fmt.Errorf("downloading signature bundle: %w", err)
 	}
@@ -375,15 +377,16 @@ func prune(dir, current string, keep int) {
 	}
 }
 
-// latestTag returns the newest release's tag from the GitHub API.
-func latestTag(ctx context.Context, client *http.Client) (string, error) {
+// latestTag returns the newest release's tag from the GitHub API. A non-empty
+// token authenticates the request, lifting the unauthenticated rate limit.
+func latestTag(ctx context.Context, client *http.Client, token string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"https://api.github.com/repos/"+repo+"/releases/latest", nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client.Do(req)
@@ -408,10 +411,13 @@ func latestTag(ctx context.Context, client *http.Client) (string, error) {
 
 // download fetches a URL into memory, capping the read so a hostile response
 // can't exhaust RAM (release archives are ~50 MB; 200 MB is generous headroom).
-func download(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+func download(ctx context.Context, client *http.Client, url, token string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

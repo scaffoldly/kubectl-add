@@ -23,6 +23,7 @@ func main() {
 	rootCmd.Flags().Bool("remove", false, "remove the resource (kubectl delete) instead of adding it")
 	rootCmd.Flags().Bool("no-edit", false, "skip the interactive edit of an install's editable inputs (e.g. helm values)")
 	rootCmd.Flags().Bool("update", false, "check for a newer release and update this binary, then exit")
+	rootCmd.Flags().String("github-token", "", "GitHub token for the self-update check (defaults to $GITHUB_TOKEN)")
 	configFlags.AddFlags(rootCmd.PersistentFlags())
 
 	// Cancel the run on interrupt/termination; WithCobra threads this into

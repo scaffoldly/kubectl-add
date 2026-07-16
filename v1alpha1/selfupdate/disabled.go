@@ -13,9 +13,9 @@ import (
 )
 
 // AutoUpdate is a no-op in noselfupdate builds.
-func AutoUpdate(ctx context.Context, current string, client *http.Client) {}
+func AutoUpdate(ctx context.Context, current, token string, client *http.Client) {}
 
 // Update reports that self-update is unavailable in this build.
-func Update(ctx context.Context, current string, client *http.Client) error {
+func Update(ctx context.Context, current, token string, client *http.Client) error {
 	return fmt.Errorf("self-update is disabled in this build; update via your package manager")
 }

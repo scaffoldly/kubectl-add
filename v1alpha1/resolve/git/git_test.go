@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -211,7 +212,7 @@ func TestLatestReleaseAndTree(t *testing.T) {
 	}
 	g := newGitHub(testClient())
 
-	tag, err := g.latestRelease("kubernetes/ingress-nginx")
+	tag, err := g.latestRelease(context.Background(), "kubernetes/ingress-nginx")
 	if err != nil {
 		t.Fatalf("latestRelease: %v", err)
 	}
@@ -220,7 +221,7 @@ func TestLatestReleaseAndTree(t *testing.T) {
 	}
 	t.Logf("latest release: %s", tag)
 
-	paths, err := g.tree("kubernetes/ingress-nginx", tag)
+	paths, err := g.tree(context.Background(), "kubernetes/ingress-nginx", tag)
 	if err != nil {
 		t.Fatalf("tree: %v", err)
 	}

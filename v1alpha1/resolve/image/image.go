@@ -1,6 +1,7 @@
 package image
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -34,7 +35,7 @@ func (r *Resolver) Detect(resource string) bool {
 }
 
 // Resolve normalizes the OCI reference into a helm Resolution.
-func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
+func (r *Resolver) Resolve(ctx context.Context, resource string) (*resolve.Resolution, error) {
 	u, err := url.Parse(resource)
 	if err != nil {
 		return nil, fmt.Errorf("image resolver: parsing %q: %w", resource, err)

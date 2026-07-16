@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -56,11 +57,11 @@ func (g *github) parseRef(resource string) (ref, subpath string, isBlob bool) {
 	return "", "", false
 }
 
-func (g *github) latestRelease(repo string) (string, error) {
+func (g *github) latestRelease(ctx context.Context, repo string) (string, error) {
 	var release struct {
 		TagName string `json:"tag_name"`
 	}
-	if _, err := getJSON(g.client, "https://api.github.com/repos/"+repo+"/releases/latest", g.headers(), &release); err != nil {
+	if _, err := getJSON(ctx, g.client, "https://api.github.com/repos/"+repo+"/releases/latest", g.headers(), &release); err != nil {
 		return "", err
 	}
 	if release.TagName == "" {
@@ -70,7 +71,7 @@ func (g *github) latestRelease(repo string) (string, error) {
 	return release.TagName, nil
 }
 
-func (g *github) tree(repo, ref string) ([]string, error) {
+func (g *github) tree(ctx context.Context, repo, ref string) ([]string, error) {
 	var tree struct {
 		Tree []struct {
 			Path string `json:"path"`
@@ -79,7 +80,7 @@ func (g *github) tree(repo, ref string) ([]string, error) {
 		Truncated bool `json:"truncated"`
 	}
 	url := fmt.Sprintf("https://api.github.com/repos/%s/git/trees/%s?recursive=1", repo, ref)
-	if _, err := getJSON(g.client, url, g.headers(), &tree); err != nil {
+	if _, err := getJSON(ctx, g.client, url, g.headers(), &tree); err != nil {
 		return nil, err
 	}
 

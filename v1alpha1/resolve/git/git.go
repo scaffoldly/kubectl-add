@@ -6,6 +6,7 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,8 +14,8 @@ import (
 	"net/url"
 	gitpath "path"
 	"strings"
-	"time"
 
+	"github.com/scaffoldly/kubectl-add/v1alpha1/httpclient"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/helm"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/kustomize"
@@ -34,9 +35,9 @@ type provider interface {
 	parseRef(resource string) (ref, subpath string, isBlob bool)
 	// latestRelease returns the repo's newest release tag (or newest tag /
 	// default branch for hosts without releases).
-	latestRelease(repo string) (string, error)
+	latestRelease(ctx context.Context, repo string) (string, error)
 	// tree lists the repo's file paths (blobs only) at a ref.
-	tree(repo, ref string) ([]string, error)
+	tree(ctx context.Context, repo, ref string) ([]string, error)
 	// rawURL addresses a file at a ref for direct fetching.
 	rawURL(repo, ref, path string) *url.URL
 }
@@ -47,7 +48,7 @@ type Resolver struct {
 }
 
 func New() *Resolver {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.Default()
 	return &Resolver{providers: []provider{
 		newGitHub(client),
 		newGitLab(client),
@@ -75,7 +76,7 @@ func (r *Resolver) provider(resource string) provider {
 // explicit ref and subpath from a full URL and otherwise sniffing the repo
 // tree at the latest release. Artifacts are addressed by the host's raw URL
 // so their contents (and, for charts, their full file set) can be fetched.
-func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
+func (r *Resolver) Resolve(ctx context.Context, resource string) (*resolve.Resolution, error) {
 	p := r.provider(resource)
 	if p == nil {
 		return nil, fmt.Errorf("git resolver: no provider recognizes %q", resource)
@@ -88,7 +89,7 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 
 	ref, subpath, isBlob := p.parseRef(resource)
 	if ref == "" {
-		if ref, err = p.latestRelease(repo); err != nil {
+		if ref, err = p.latestRelease(ctx, repo); err != nil {
 			return nil, err
 		}
 	}
@@ -98,7 +99,7 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 		return fileResolution(p, repo, ref, subpath)
 	}
 
-	paths, err := p.tree(repo, ref)
+	paths, err := p.tree(ctx, repo, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -249,8 +250,8 @@ func isShorthand(resource string) bool {
 
 // getJSON performs a GET and decodes a JSON response, applying headers (e.g.
 // auth). It returns the response so callers can read pagination headers.
-func getJSON(client *http.Client, rawURL string, headers map[string]string, out any) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+func getJSON(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, out any) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("git resolver: building request: %w", err)
 	}

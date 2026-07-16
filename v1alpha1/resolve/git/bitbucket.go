@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,14 +54,14 @@ func (b *bitbucket) parseRef(resource string) (ref, subpath string, isBlob bool)
 	return ref, subpath, false
 }
 
-func (b *bitbucket) latestRelease(repo string) (string, error) {
+func (b *bitbucket) latestRelease(ctx context.Context, repo string) (string, error) {
 	var tags struct {
 		Values []struct {
 			Name string `json:"name"`
 		} `json:"values"`
 	}
 	url := "https://api.bitbucket.org/2.0/repositories/" + repo + "/refs/tags?pagelen=1&sort=-target.date"
-	if _, err := getJSON(b.client, url, b.headers(), &tags); err != nil {
+	if _, err := getJSON(ctx, b.client, url, b.headers(), &tags); err != nil {
 		return "", err
 	}
 	if len(tags.Values) > 0 && tags.Values[0].Name != "" {
@@ -74,7 +75,7 @@ func (b *bitbucket) latestRelease(repo string) (string, error) {
 			Name string `json:"name"`
 		} `json:"mainbranch"`
 	}
-	if _, err := getJSON(b.client, "https://api.bitbucket.org/2.0/repositories/"+repo, b.headers(), &meta); err != nil {
+	if _, err := getJSON(ctx, b.client, "https://api.bitbucket.org/2.0/repositories/"+repo, b.headers(), &meta); err != nil {
 		return "", err
 	}
 	if meta.MainBranch.Name == "" {
@@ -84,7 +85,7 @@ func (b *bitbucket) latestRelease(repo string) (string, error) {
 	return meta.MainBranch.Name, nil
 }
 
-func (b *bitbucket) tree(repo, ref string) ([]string, error) {
+func (b *bitbucket) tree(ctx context.Context, repo, ref string) ([]string, error) {
 	var paths []string
 	// Bitbucket lists one directory at a time; walk breadth-first.
 	queue := []string{fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/src/%s/?pagelen=100", repo, ref)}
@@ -99,7 +100,7 @@ func (b *bitbucket) tree(repo, ref string) ([]string, error) {
 			} `json:"values"`
 			Next string `json:"next"`
 		}
-		if _, err := getJSON(b.client, url, b.headers(), &page); err != nil {
+		if _, err := getJSON(ctx, b.client, url, b.headers(), &page); err != nil {
 			return nil, err
 		}
 		for _, v := range page.Values {

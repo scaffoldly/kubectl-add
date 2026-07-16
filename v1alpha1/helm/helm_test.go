@@ -17,7 +17,7 @@ func fakeFetch(files map[string][]byte) Fetch {
 func TestDiscoverAndRender(t *testing.T) {
 	chartURL, _ := url.Parse("https://example.com/chart/Chart.yaml")
 	files := map[string][]byte{
-		"/chart/Chart.yaml": []byte("apiVersion: v2\nname: hello\nversion: 0.1.0\n"),
+		"/chart/Chart.yaml":  []byte("apiVersion: v2\nname: hello\nversion: 0.1.0\n"),
 		"/chart/values.yaml": []byte("message: default hello\n"),
 		"/chart/templates/configmap.yaml": []byte(
 			"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-cfg\ndata:\n  message: {{ .Values.message | quote }}\n"),

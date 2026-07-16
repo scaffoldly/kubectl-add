@@ -159,7 +159,7 @@ func (a *Applier) Run(ctx context.Context) error {
 	}
 	a.client = client
 
-	cred, err := callerCredential(a.RESTConfig)
+	cred, err := callerCredential(ctx, a.RESTConfig)
 	if err != nil {
 		return err
 	}

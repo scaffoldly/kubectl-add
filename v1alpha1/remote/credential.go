@@ -2,6 +2,7 @@ package remote
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,7 +31,7 @@ type credential struct {
 //     captured from the Authorization header it produces.
 //
 // It fails closed rather than falling back to any broader identity.
-func callerCredential(cfg *rest.Config) (*credential, error) {
+func callerCredential(ctx context.Context, cfg *rest.Config) (*credential, error) {
 	if cert, key, err := clientCert(cfg); err != nil {
 		return nil, err
 	} else if len(cert) > 0 && len(key) > 0 {
@@ -46,7 +47,7 @@ func callerCredential(cfg *rest.Config) (*credential, error) {
 	}
 
 	if cfg.ExecProvider != nil || cfg.AuthProvider != nil {
-		token, err := tokenFromAuthPlugin(cfg)
+		token, err := tokenFromAuthPlugin(ctx, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +100,7 @@ func staticToken(cfg *rest.Config) (string, error) {
 // Authorization header it sets on an outgoing request. The request is not
 // sent to the network — a stub round-tripper records the header the auth
 // layer produced and returns immediately.
-func tokenFromAuthPlugin(cfg *rest.Config) (string, error) {
+func tokenFromAuthPlugin(ctx context.Context, cfg *rest.Config) (string, error) {
 	capture := &captureRoundTripper{}
 	c := rest.CopyConfig(cfg)
 	// Replace the base transport with the capture stub; TLS settings must be
@@ -112,7 +113,7 @@ func tokenFromAuthPlugin(cfg *rest.Config) (string, error) {
 		return "", fmt.Errorf("remote: building auth transport: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.Host, "/")+"/version", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.Host, "/")+"/version", nil)
 	if err != nil {
 		return "", fmt.Errorf("remote: building auth probe: %w", err)
 	}

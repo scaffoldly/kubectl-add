@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"testing"
 
 	"k8s.io/client-go/rest"
@@ -8,7 +9,7 @@ import (
 
 func TestCallerCredential(t *testing.T) {
 	t.Run("client certificate", func(t *testing.T) {
-		cred, err := callerCredential(&rest.Config{
+		cred, err := callerCredential(context.Background(), &rest.Config{
 			TLSClientConfig: rest.TLSClientConfig{
 				CertData: []byte("CERT"),
 				KeyData:  []byte("KEY"),
@@ -26,7 +27,7 @@ func TestCallerCredential(t *testing.T) {
 	})
 
 	t.Run("bearer token", func(t *testing.T) {
-		cred, err := callerCredential(&rest.Config{BearerToken: "abc"})
+		cred, err := callerCredential(context.Background(), &rest.Config{BearerToken: "abc"})
 		if err != nil {
 			t.Fatalf("callerCredential: %v", err)
 		}
@@ -36,7 +37,7 @@ func TestCallerCredential(t *testing.T) {
 	})
 
 	t.Run("certificate preferred over token", func(t *testing.T) {
-		cred, err := callerCredential(&rest.Config{
+		cred, err := callerCredential(context.Background(), &rest.Config{
 			BearerToken:     "abc",
 			TLSClientConfig: rest.TLSClientConfig{CertData: []byte("CERT"), KeyData: []byte("KEY")},
 		})
@@ -49,7 +50,7 @@ func TestCallerCredential(t *testing.T) {
 	})
 
 	t.Run("no credential fails closed", func(t *testing.T) {
-		if _, err := callerCredential(&rest.Config{}); err == nil {
+		if _, err := callerCredential(context.Background(), &rest.Config{}); err == nil {
 			t.Fatal("expected error for missing credential")
 		}
 	})

@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -49,8 +50,8 @@ type Resolver interface {
 	Detect(resource string) bool
 	// Resolve fetches through the transport, sniffs the artifact format
 	// (helm, kustomize, yaml), and distills the resource into a
-	// Resolution.
-	Resolve(resource string) (*Resolution, error)
+	// Resolution. The context bounds any I/O the transport performs.
+	Resolve(ctx context.Context, resource string) (*Resolution, error)
 }
 
 // Registry holds resolvers in priority order; the first resolver to detect
@@ -70,7 +71,7 @@ func (r *Registry) WithResolver(resolver Resolver) *Registry {
 }
 
 // Resolve routes the resource to the first resolver that detects it.
-func (r *Registry) Resolve(resource string) (*Resolution, error) {
+func (r *Registry) Resolve(ctx context.Context, resource string) (*Resolution, error) {
 	slog.Info("resolving", "resource", resource)
 	for _, resolver := range r.resolvers {
 		if !resolver.Detect(resource) {
@@ -78,7 +79,7 @@ func (r *Registry) Resolve(resource string) (*Resolution, error) {
 			continue
 		}
 		slog.Debug("resolver detected resource", "resolver", resolver.Name(), "resource", resource)
-		return resolver.Resolve(resource)
+		return resolver.Resolve(ctx, resource)
 	}
 	return nil, fmt.Errorf("no resolver recognizes resource %q", resource)
 }

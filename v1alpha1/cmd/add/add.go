@@ -14,6 +14,7 @@ import (
 
 	"github.com/lmittmann/tint"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/helm"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/httpclient"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/kustomize"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/remote"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
@@ -240,8 +241,8 @@ func (a *Add) WithRegistry(registry *resolve.Registry) *Add {
 // URL distills Resource through the resolver registry into the URL to
 // apply, recording the resolved Format on the way. Returns nil on failure
 // and records the cause in a.err for Run to surface.
-func (a *Add) URL() *url.URL {
-	resolution, err := a.Registry.Resolve(a.Resource)
+func (a *Add) URL(ctx context.Context) *url.URL {
+	resolution, err := a.Registry.Resolve(ctx, a.Resource)
 	if err != nil {
 		a.err = err
 		return nil
@@ -257,7 +258,12 @@ func (a *Add) Run() error {
 		return a.err
 	}
 
-	manifest := a.URL()
+	ctx := a.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	manifest := a.URL(ctx)
 	if a.err != nil {
 		return a.err
 	}
@@ -280,11 +286,6 @@ func (a *Add) Run() error {
 				a.WithNamespace(ns)
 			}
 		}
-	}
-
-	ctx := a.Context
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	// A helm chart is discovered, rendered, and (optionally) has its
@@ -451,9 +452,6 @@ func (a *Add) apply(ctx context.Context, source *url.URL, body []byte, format re
 		Run(ctx)
 }
 
-// maxRedirects bounds the redirect chain when fetching a manifest.
-const maxRedirects = 10
-
 // fetch downloads the resource at u, erroring if it is absent.
 func (a *Add) fetch(ctx context.Context, u *url.URL) ([]byte, error) {
 	body, found, err := a.get(ctx, u)
@@ -467,24 +465,14 @@ func (a *Add) fetch(ctx context.Context, u *url.URL) ([]byte, error) {
 }
 
 // get downloads the resource at u, following redirects (e.g. k8s.io short
-// links to raw content) up to maxRedirects hops. A 404 is reported as
-// found=false rather than an error, so callers can probe optional files.
+// links to raw content). A 404 is reported as found=false rather than an
+// error, so callers can probe optional files.
 func (a *Add) get(ctx context.Context, u *url.URL) ([]byte, bool, error) {
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			slog.Debug("following redirect", "from", via[len(via)-1].URL, "to", req.URL, "hop", len(via))
-			if len(via) >= maxRedirects {
-				return fmt.Errorf("stopped after %d redirects", maxRedirects)
-			}
-			return nil
-		},
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("building request for %s: %w", u, err)
 	}
-	resp, err := client.Do(req)
+	resp, err := httpclient.Default().Do(req)
 	if err != nil {
 		return nil, false, fmt.Errorf("fetching %s: %w", u, err)
 	}

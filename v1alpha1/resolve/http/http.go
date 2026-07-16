@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -8,8 +9,8 @@ import (
 	"net/url"
 	"path"
 	"strings"
-	"time"
 
+	"github.com/scaffoldly/kubectl-add/v1alpha1/httpclient"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/helm"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/kustomize"
@@ -26,7 +27,7 @@ type Resolver struct {
 
 func New() *Resolver {
 	return &Resolver{
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: httpclient.Default(),
 	}
 }
 
@@ -41,7 +42,7 @@ func (r *Resolver) Detect(resource string) bool {
 
 // Resolve sniffs the URL to determine the artifact format: packaged helm
 // charts (.tgz) route to helm, everything else falls back to yaml.
-func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
+func (r *Resolver) Resolve(ctx context.Context, resource string) (*resolve.Resolution, error) {
 	u, err := url.Parse(resource)
 	if err != nil {
 		return nil, fmt.Errorf("http resolver: parsing %q: %w", resource, err)
@@ -63,7 +64,7 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 
 	// An extension-less URL may be a helm chart repository; probe its
 	// index.yaml before assuming a plain manifest.
-	if path.Ext(strings.TrimSuffix(u.Path, "/")) == "" && r.isChartRepo(u) {
+	if path.Ext(strings.TrimSuffix(u.Path, "/")) == "" && r.isChartRepo(ctx, u) {
 		slog.Debug("sniffed helm chart repo", "url", u)
 		return helm.Resolution(r.Name(), u), nil
 	}
@@ -74,12 +75,17 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 
 // isChartRepo reports whether the URL hosts a helm chart repository, by
 // fetching its index.yaml and checking for the repository's entries map.
-func (r *Resolver) isChartRepo(u *url.URL) bool {
+func (r *Resolver) isChartRepo(ctx context.Context, u *url.URL) bool {
 	index := *u
 	index.RawQuery = ""
 	index.Path = strings.TrimSuffix(u.Path, "/") + "/index.yaml"
 
-	resp, err := r.client.Get(index.String())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, index.String(), nil)
+	if err != nil {
+		slog.Debug("chart repo probe failed", "url", &index, "err", err)
+		return false
+	}
+	resp, err := r.client.Do(req)
 	if err != nil {
 		slog.Debug("chart repo probe failed", "url", &index, "err", err)
 		return false

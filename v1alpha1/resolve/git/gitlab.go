@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -55,12 +56,12 @@ func (g *gitlab) parseRef(resource string) (ref, subpath string, isBlob bool) {
 	return "", "", false
 }
 
-func (g *gitlab) latestRelease(repo string) (string, error) {
+func (g *gitlab) latestRelease(ctx context.Context, repo string) (string, error) {
 	var releases []struct {
 		TagName string `json:"tag_name"`
 	}
 	url := "https://gitlab.com/api/v4/projects/" + g.projectID(repo) + "/releases?per_page=1"
-	if _, err := getJSON(g.client, url, g.headers(), &releases); err != nil {
+	if _, err := getJSON(ctx, g.client, url, g.headers(), &releases); err != nil {
 		return "", err
 	}
 	if len(releases) == 0 || releases[0].TagName == "" {
@@ -70,7 +71,7 @@ func (g *gitlab) latestRelease(repo string) (string, error) {
 	return releases[0].TagName, nil
 }
 
-func (g *gitlab) tree(repo, ref string) ([]string, error) {
+func (g *gitlab) tree(ctx context.Context, repo, ref string) ([]string, error) {
 	var paths []string
 	// The tree endpoint is paginated; follow X-Next-Page until exhausted.
 	for page := "1"; page != ""; {
@@ -80,7 +81,7 @@ func (g *gitlab) tree(repo, ref string) ([]string, error) {
 		}
 		url := fmt.Sprintf("https://gitlab.com/api/v4/projects/%s/repository/tree?recursive=true&ref=%s&per_page=100&page=%s",
 			g.projectID(repo), ref, page)
-		resp, err := getJSON(g.client, url, g.headers(), &entries)
+		resp, err := getJSON(ctx, g.client, url, g.headers(), &entries)
 		if err != nil {
 			return nil, err
 		}

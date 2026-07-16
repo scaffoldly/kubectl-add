@@ -101,7 +101,14 @@ CI runs the same across a linux/windows/macos × x64/arm64 matrix on every PR.
   be determined, fail closed.
 - **Actions are pinned to commit SHAs** with a version comment
   (`uses: actions/checkout@<sha> # v7.0.0`). Dependabot bumps them; keep the
-  convention when adding steps.
+  convention when adding steps. Pin cosign/attestation actions to the commit
+  under the tag, not the annotated-tag object — Sigstore verification rejects
+  tag-object SHAs ("imposter commit").
+- **`main`'s required checks are the matrix cell names**, not a bare `ci`
+  (e.g. `ci (ubuntu-24.04, stable)`). Renaming a matrix axis — bumping an image
+  label, adding/removing a `go` value — renames the check context, so update
+  the branch-protection required contexts in the same change or merges will
+  block on a context that no longer reports.
 - **`make build` injects the version** via `-ldflags -X …/version.Version`.
   Plain `go build` leaves the `dev` default (with a build-info fallback) — fine
   for local work, but release binaries must carry the tag.

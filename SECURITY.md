@@ -33,6 +33,42 @@ Please do **not** open a public issue for a suspected vulnerability.
 - A coordinated disclosure once a fix or workaround is available; we will
   credit you in the advisory unless you ask otherwise.
 
+## Verifying releases
+
+Every release archive is signed and attested by the release workflow:
+
+- **cosign** (keyless: Sigstore Fulcio cert + Rekor transparency log) — proves
+  *who* published the artifact. Each archive ships a self-contained
+  `<archive>.sigstore` bundle.
+- **SLSA build provenance** (`actions/attest-build-provenance`) — attests
+  *how and where* it was built (workflow, commit, builder). Attestations live
+  in the repo's attestation store; nothing extra is attached to the release.
+
+Verify the cosign signature (cosign v2+):
+
+```sh
+ARCHIVE=kubectl-add_linux_amd64.tar.gz   # the archive you downloaded
+REPO=scaffoldly/kubectl-add
+TAG=v0.1.0
+
+gh release download "$TAG" -R "$REPO" --pattern "$ARCHIVE" --pattern "$ARCHIVE.sigstore"
+
+cosign verify-blob \
+  --bundle "$ARCHIVE.sigstore" \
+  --certificate-identity-regexp '^https://github.com/scaffoldly/kubectl-add/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$ARCHIVE"
+```
+
+Verify the build provenance:
+
+```sh
+gh attestation verify "$ARCHIVE" --repo scaffoldly/kubectl-add
+```
+
+`Verified OK` (cosign) and a matched attestation (gh) mean the archive is
+exactly what the release workflow built and signed.
+
 ## Scope
 
 `kubectl-add` resolves a resource, then applies it **server-side as the

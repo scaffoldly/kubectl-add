@@ -14,13 +14,13 @@ import (
 )
 
 func TestManagedInstall(t *testing.T) {
-	// managedInstall normalizes separators, so slash literals cover every OS
-	// (and a backslash krew path, as Windows would produce).
+	// Only genuinely manager-owned stores defer. managedInstall normalizes
+	// separators, so slash literals cover every OS (incl. a backslash krew
+	// path as Windows would produce).
 	managed := map[string]string{
-		"/opt/homebrew/Cellar/kubectl-add/0.1.0/bin/kubectl-add": "Homebrew",
-		"/nix/store/abc-kubectl-add-0.1.0/bin/kubectl-add":       "Nix",
-		"/home/u/.krew/store/add/v0.1.0/kubectl-add":             "krew",
-		`C:\Users\u\.krew\store\add\v0.1.0\kubectl-add.exe`:      "krew",
+		"/nix/store/abc-kubectl-add-0.1.0/bin/kubectl-add":  "Nix",
+		"/home/u/.krew/store/add/v0.1.0/kubectl-add":        "krew",
+		`C:\Users\u\.krew\store\add\v0.1.0\kubectl-add.exe`: "krew",
 	}
 	for path, want := range managed {
 		if got, ok := managedInstall(path); !ok || got != want {
@@ -28,7 +28,9 @@ func TestManagedInstall(t *testing.T) {
 		}
 	}
 
+	// Homebrew is NOT deferred — a tap install self-updates in place.
 	unmanaged := []string{
+		"/opt/homebrew/Cellar/kubectl-add/0.1.0/bin/kubectl-add",
 		"/home/u/.local/bin/kubectl_add_0.1.0",
 		"/usr/local/bin/kubectl_add_0.1.0",
 	}
@@ -41,10 +43,9 @@ func TestManagedInstall(t *testing.T) {
 
 func TestUpgradeCommand(t *testing.T) {
 	for manager, want := range map[string]string{
-		"Homebrew": "brew upgrade kubectl-add",
-		"krew":     "kubectl krew upgrade add",
-		"Nix":      "nix profile upgrade kubectl-add",
-		"unknown":  "your package manager",
+		"krew":    "kubectl krew upgrade add",
+		"Nix":     "nix profile upgrade kubectl-add",
+		"unknown": "your package manager",
 	} {
 		if got := upgradeCommand(manager); got != want {
 			t.Errorf("upgradeCommand(%q) = %q, want %q", manager, got, want)

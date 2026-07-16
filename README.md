@@ -67,20 +67,23 @@ kubectl add --help
 
 ### Staying current
 
-A binary you installed directly (GitHub release, `make install`, or the curl
-script) keeps itself up to date: on a normal run it checks for a newer release
-at most once a day and, if there is one, downloads it, **verifies the checksum
-and cosign signature**, and repoints its symlink — never overwriting the
-running binary. Updates fail open: a hiccup never blocks your `kubectl add`.
+A binary installed from the GitHub release, `make install`, the curl script, or
+the **Homebrew tap** keeps itself up to date: on a normal run it checks for a
+newer release at most once a day and, if there is one, downloads it,
+**verifies the checksum and cosign signature**, and swaps it in — repointing
+the symlink for the versioned layout, or replacing the binary in place for a
+tap/bare install. Updates fail open: a hiccup never blocks your `kubectl add`.
 
 ```sh
 kubectl add --update                  # update now, then exit
 export KUBECTL_ADD_NO_AUTO_UPDATE=1   # disable the automatic daily check
 ```
 
-Installs managed by a package manager (Homebrew core, krew, Nix) are left
-alone — update those through the manager (`brew upgrade`, `kubectl krew
-upgrade`, `nix profile upgrade`).
+Installs owned by a manager with a read-only or self-managed store — **krew**
+and **Nix** — are left alone; the updater points you at
+`kubectl krew upgrade` / `nix profile upgrade` instead. (A future
+homebrew-core build will opt out at compile time, since core forbids
+self-updating software; the tap build does not.)
 
 Point it at a resource and it resolves the format and applies it server-side.
 Scope any of these to a namespace with `--namespace`, or undo with `--remove`:

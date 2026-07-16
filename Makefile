@@ -8,7 +8,10 @@ VERSION_PKG := github.com/scaffoldly/kubectl-add/v1alpha1/version
 # -s -w strip the symbol table and DWARF debug info for a smaller binary.
 LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 
-.PHONY: build install test test-e2e clean
+.PHONY: build install vet test test-e2e clean
+
+vet:
+	go vet ./...
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)

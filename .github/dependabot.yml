@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    # Only bump direct dependencies. The indirect graph floats with the direct
+    # dep that requires it, so bumping indirect modules on their own is churn
+    # that drifts them out of step with their requirer. Security updates still
+    # fire for indirect deps — `allow` does not gate them — so vuln coverage is
+    # unaffected.
+    allow:
+      - dependency-type: direct
+    # Batch routine bumps into one PR; majors stay individual so each
+    # compatibility-affecting change is reviewed on its own. Go has no dev/prod
+    # dependency split, so the only meaningful grouping axis is update-type.
+    groups:
+      go-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    # Action pins are low-risk to batch; group everything into one PR.
+    groups:
+      github-actions:
+        patterns: ["*"]

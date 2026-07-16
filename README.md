@@ -1,5 +1,12 @@
 # kubectl-add
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/scaffoldly/kubectl-add.svg)](https://pkg.go.dev/github.com/scaffoldly/kubectl-add)
+[![CI](https://github.com/scaffoldly/kubectl-add/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/scaffoldly/kubectl-add/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/scaffoldly/kubectl-add/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/scaffoldly/kubectl-add/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/scaffoldly/kubectl-add/badge)](https://scorecard.dev/viewer/?uri=github.com/scaffoldly/kubectl-add)
+[![Release](https://img.shields.io/github/v/release/scaffoldly/kubectl-add)](https://github.com/scaffoldly/kubectl-add/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+
 `kubectl add` is a kubectl plugin that installs things into your cluster from
 whatever you point it at — a YAML URL, a kustomization, a helm chart, a helm
 chart repository, or a git repo — and applies them **server-side**, so it

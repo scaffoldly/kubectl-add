@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+    # Defaults are [opened, synchronize, reopened]. Add ready_for_review
+    # so a draft -> ready transition re-runs CI without an empty push;
+    # keep synchronize explicit so every new commit on the PR triggers a
+    # fresh run.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # x64 + arm64 across linux, windows, and macos, all pinned to discrete
+        # image labels (no *-latest aliases) so every cell names an explicit
+        # version — the GitHub-hosted ARM runners (free for public repos) only
+        # exist as discrete labels, so pinning the rest keeps the matrix
+        # consistent. macos-26-intel is x64 (Intel), macos-26 is arm64 (Apple
+        # Silicon). Bumping an image label renames its check context, so update
+        # the branch-protection required contexts when bumping. gofmt runs
+        # Linux-only (see below), covering both Linux cells.
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - ubuntu-24.04-arm
+          - windows-11-arm
+          - macos-26-intel
+          - macos-26
+        # "min" reads the floor from go.mod (the `go X.Y` directive); "stable"
+        # is whatever setup-go's `stable` alias resolves to. Keeping "min"
+        # symbolic avoids drift between go.mod and the workflow when the floor
+        # is bumped.
+        go: [min, stable]
+    defaults:
+      run:
+        # bash on Windows runners comes from git-for-windows (MSYS) and matches
+        # the Linux job's shell semantics, so steps below don't need per-OS
+        # branching for $(...) / [ -n ... ] / piping.
+        shell: bash
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: resolve go version
+        id: goversion
+        # "min" → the `go X.Y` directive in go.mod (the declared floor).
+        # Anything else (e.g. "stable") passes through unchanged so setup-go's
+        # aliases keep working.
+        run: |
+          if [ "${{ matrix.go }}" = "min" ]; then
+            v=$(awk '/^go [0-9]/ {print $2; exit}' go.mod)
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ matrix.go }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ steps.goversion.outputs.version }}
+          cache: true
+
+      - name: gofmt
+        # Linux-only: actions/checkout on Windows normalizes line endings to
+        # CRLF, which gofmt flags on every file. The Linux cells already
+        # enforce gofmt on the canonical LF tree.
+        if: runner.os == 'Linux'
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$out"
+            exit 1
+          fi
+
+      # make build/install export CGO_ENABLED=0 (see Makefile) — kubectl-add is
+      # pure Go, and windows-11-arm runners ship an x86_64 gcc that can't
+      # assemble runtime/cgo's arm64 stubs.
+      - name: go vet
+        run: make vet
+
+      - name: go build
+        run: make build
+
+      - name: tests
+        run: make test
+
+      # The e2e suite (make test-e2e) provisions a live cluster and is not part
+      # of this cross-OS/arch matrix; it runs separately.

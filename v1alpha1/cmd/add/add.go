@@ -21,6 +21,8 @@ import (
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/git"
 	resolvehttp "github.com/scaffoldly/kubectl-add/v1alpha1/resolve/http"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/image"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/selfupdate"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/version"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -64,6 +66,13 @@ type Add struct {
 	Context context.Context
 	// Registry resolves Resource into an installable artifact.
 	Registry *resolve.Registry
+	// AutoUpdate keeps the binary current on a normal run (throttled to once
+	// per day). Defaults to on; the KUBECTL_ADD_NO_AUTO_UPDATE env var and
+	// managed installs disable it.
+	AutoUpdate bool
+	// Update forces an immediate check-and-update, then exits without running
+	// a command.
+	Update bool
 
 	// err carries the first builder failure to Run.
 	err error
@@ -71,7 +80,8 @@ type Add struct {
 
 func New() *Add {
 	return &Add{
-		Namespace: DefaultNamespace,
+		Namespace:  DefaultNamespace,
+		AutoUpdate: true,
 		Registry: resolve.New().
 			WithResolver(git.New()).
 			WithResolver(image.New()).
@@ -89,7 +99,14 @@ func (a *Add) IntoCobra() *cobra.Command {
 			cobra.CommandDisplayNameAnnotation: "kubectl add",
 		},
 		SilenceUsage: true,
-		Args:         cobra.ExactArgs(1),
+		// One resource, except with --update (which takes none and just
+		// self-updates).
+		Args: func(cmd *cobra.Command, args []string) error {
+			if update, _ := cmd.Flags().GetBool("update"); update {
+				return cobra.NoArgs(cmd, args)
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.WithCobra(cmd, args).Run()
 		},
@@ -109,7 +126,12 @@ func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
 	a.WithRemove(remove)
 	noEdit, _ := cmd.Flags().GetBool("no-edit")
 	a.WithNoEdit(noEdit)
-	a.WithResource(args[0])
+	if update, _ := cmd.Flags().GetBool("update"); update {
+		a.WithUpdate(true)
+	}
+	if len(args) > 0 {
+		a.WithResource(args[0])
+	}
 
 	if a.ConfigFlags != nil {
 		config, err := a.ConfigFlags.ToRESTConfig()
@@ -238,6 +260,21 @@ func (a *Add) WithRegistry(registry *resolve.Registry) *Add {
 	return a
 }
 
+// WithAutoUpdate toggles keeping the binary current on a normal run. On by
+// default; a no-op for managed installs and when KUBECTL_ADD_NO_AUTO_UPDATE is
+// set.
+func (a *Add) WithAutoUpdate(autoUpdate bool) *Add {
+	a.AutoUpdate = autoUpdate
+	return a
+}
+
+// WithUpdate forces an immediate self-update and exits without running a
+// command.
+func (a *Add) WithUpdate(update bool) *Add {
+	a.Update = update
+	return a
+}
+
 // URL distills Resource through the resolver registry into the URL to
 // apply, recording the resolved Format on the way. Returns nil on failure
 // and records the cause in a.err for Run to surface.
@@ -261,6 +298,17 @@ func (a *Add) Run() error {
 	ctx := a.Context
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	// --update: self-update on demand, then exit without running a command.
+	if a.Update {
+		return selfupdate.Update(ctx, version.String(), httpclient.Default())
+	}
+
+	// Keep the binary current before doing the requested work. Throttled to
+	// once per day and fail-open — a swapped binary takes effect next run.
+	if a.AutoUpdate {
+		selfupdate.AutoUpdate(ctx, version.String(), httpclient.Default())
 	}
 
 	manifest := a.URL(ctx)

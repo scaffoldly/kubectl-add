@@ -8,26 +8,26 @@ how a change gets from an issue to a release.
 
 Deep-link by filename; line numbers will drift.
 
-| Topic                                    | Source                                                                    |
-| ---------------------------------------- | ------------------------------------------------------------------------- |
-| CLI entrypoint (`kubectl add`)           | [`cmd/kubectl-add/main.go`](./cmd/kubectl-add/main.go)                     |
-| Library façade (`New`, type aliases)     | [`lib.go`](./lib.go)                                                       |
-| Command builder + run loop               | [`v1alpha1/cmd/add/add.go`](./v1alpha1/cmd/add/add.go)                     |
-| Resolver registry + `Resolver` interface | [`v1alpha1/resolve/resolve.go`](./v1alpha1/resolve/resolve.go)            |
-| Git transport (github/gitlab/bitbucket)  | [`v1alpha1/resolve/git/`](./v1alpha1/resolve/git)                        |
+| Topic                                    | Source                                                                                    |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------- |
+| CLI entrypoint (`kubectl add`)           | [`cmd/kubectl-add/main.go`](./cmd/kubectl-add/main.go)                                    |
+| Library façade (`New`, type aliases)     | [`lib.go`](./lib.go)                                                                      |
+| Command builder + run loop               | [`v1alpha1/cmd/add/add.go`](./v1alpha1/cmd/add/add.go)                                    |
+| Resolver registry + `Resolver` interface | [`v1alpha1/resolve/resolve.go`](./v1alpha1/resolve/resolve.go)                            |
+| Git transport (github/gitlab/bitbucket)  | [`v1alpha1/resolve/git/`](./v1alpha1/resolve/git)                                         |
 | HTTP + OCI transports                    | [`v1alpha1/resolve/http/`](./v1alpha1/resolve/http), [`image/`](./v1alpha1/resolve/image) |
-| Server-side apply (forward credential)   | [`v1alpha1/remote/`](./v1alpha1/remote)                                   |
-| Helm render / repo / OCI pull            | [`v1alpha1/helm/`](./v1alpha1/helm)                                       |
-| Kustomize materialization                | [`v1alpha1/kustomize/`](./v1alpha1/kustomize)                            |
-| Shared HTTP client + build version       | [`v1alpha1/httpclient/`](./v1alpha1/httpclient), [`version/`](./v1alpha1/version) |
-| e2e harness + runner                     | [`test/e2e/e2e_test.go`](./test/e2e/e2e_test.go)                          |
-| Build / lint / test commands             | [`Makefile`](./Makefile)                                                  |
-| CI matrix                                | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)                  |
-| Release (build + publish binaries)       | [`.github/workflows/release.yaml`](./.github/workflows/release.yaml)      |
-| CodeQL scan                              | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml)          |
-| OpenSSF Scorecard scan                   | [`.github/workflows/scorecard.yml`](./.github/workflows/scorecard.yml)    |
-| Dependabot config                        | [`.github/dependabot.yml`](./.github/dependabot.yml)                      |
-| Security policy                          | [`SECURITY.md`](./SECURITY.md)                                            |
+| Server-side apply (forward credential)   | [`v1alpha1/remote/`](./v1alpha1/remote)                                                   |
+| Helm render / repo / OCI pull            | [`v1alpha1/helm/`](./v1alpha1/helm)                                                       |
+| Kustomize materialization                | [`v1alpha1/kustomize/`](./v1alpha1/kustomize)                                             |
+| Shared HTTP client + build version       | [`v1alpha1/httpclient/`](./v1alpha1/httpclient), [`version/`](./v1alpha1/version)         |
+| e2e harness + runner                     | [`test/e2e/e2e_test.go`](./test/e2e/e2e_test.go)                                          |
+| Build / lint / test commands             | [`Makefile`](./Makefile)                                                                  |
+| CI matrix                                | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)                                  |
+| Release (build + publish binaries)       | [`.github/workflows/release.yaml`](./.github/workflows/release.yaml)                      |
+| CodeQL scan                              | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml)                          |
+| OpenSSF Scorecard scan                   | [`.github/workflows/scorecard.yml`](./.github/workflows/scorecard.yml)                    |
+| Dependabot config                        | [`.github/dependabot.yml`](./.github/dependabot.yml)                                      |
+| Security policy                          | [`SECURITY.md`](./SECURITY.md)                                                            |
 
 ## Architecture
 
@@ -41,7 +41,7 @@ Deep-link by filename; line numbers will drift.
    `provider`s ([`git/github.go`](./v1alpha1/resolve/git/github.go), etc.).
 
 2. **Apply, server-side, as you.** [`v1alpha1/remote`](./v1alpha1/remote)
-   forwards the *caller's own* credential (client cert, static bearer token, or
+   forwards the _caller's own_ credential (client cert, static bearer token, or
    an exec/auth-plugin token) into a short-lived Secret and runs a throwaway
    pod that applies the manifest under the connected user's identity and RBAC.
    No ServiceAccount is created; no privileges are granted. This is a security
@@ -79,7 +79,7 @@ make install    # -> $HOME/.local/bin/kubectl-add, for `kubectl add`
 
 - **`*_test.go` next to the code** — unit tests with fabricated inputs or
   fakes. Some carry live-network cases guarded by `testing.Short()`; `go test
-  -short` skips them.
+-short` skips them.
 - **`test/e2e/`** — the [`e2e_test.go`](./test/e2e/e2e_test.go) harness applies
   real resources against a live cluster and asserts on the result. It needs a
   reachable cluster and is **not** part of the cross-OS/arch CI matrix; run it
@@ -112,6 +112,11 @@ CI runs the same across a linux/windows/macos × x64/arm64 matrix on every PR.
 - **`make build` injects the version** via `-ldflags -X …/version.Version`.
   Plain `go build` leaves the `dev` default (with a build-info fallback) — fine
   for local work, but release binaries must carry the tag.
+- **The `noselfupdate` build tag compiles out self-update.** Builds for
+  channels that forbid self-updating software (homebrew-core, nixpkgs) must use
+  `go build -tags noselfupdate` — it swaps `v1alpha1/selfupdate` for a stub, so
+  the sigstore/update machinery is not linked in. The tap and curl-installer
+  builds omit the tag so auto-update stays on.
 - **Keep the README in sync.** The README's compatibility matrix and examples
   mirror what the resolvers actually support; a new source/format or a new
   example updates the README in the same PR.
@@ -135,7 +140,7 @@ Don't commit secrets. Signed commits are preferred; CI does not enforce them.
 ## Commit messages
 
 Short subject (≤ 72 chars), imperative mood ("Add X", not "Added X"). Wrap the
-body at ~72 cols. Explain the *why*; the diff covers the *what*.
+body at ~72 cols. Explain the _why_; the diff covers the _what_.
 
 ## Releasing
 

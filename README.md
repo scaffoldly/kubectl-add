@@ -58,6 +58,23 @@ Confirm kubectl sees it:
 kubectl add --help
 ```
 
+### Staying current
+
+A binary you installed directly (GitHub release, `make install`, or the curl
+script) keeps itself up to date: on a normal run it checks for a newer release
+at most once a day and, if there is one, downloads it, **verifies the checksum
+and cosign signature**, and repoints its symlink — never overwriting the
+running binary. Updates fail open: a hiccup never blocks your `kubectl add`.
+
+```sh
+kubectl add --update                  # update now, then exit
+export KUBECTL_ADD_NO_AUTO_UPDATE=1   # disable the automatic daily check
+```
+
+Installs managed by a package manager (Homebrew core, krew, Nix) are left
+alone — update those through the manager (`brew upgrade`, `kubectl krew
+upgrade`, `nix profile upgrade`).
+
 Point it at a resource and it resolves the format and applies it server-side.
 Scope any of these to a namespace with `--namespace`, or undo with `--remove`:
 

@@ -34,10 +34,15 @@ your RBAC and no kubeconfig is copied in.
 
 ### Setup
 
-<!-- TODO(krew): once merged into the krew-index, document install via Krew:
-     kubectl krew install add — see https://github.com/scaffoldly/kubectl-add/issues/2 -->
+<!-- The krew manifest (.krew.yaml) is ready and release-automated via
+     krew-release-bot; `kubectl krew install add` lands once the first
+     krew-index submission is accepted. See #2. -->
 
-Grab a binary from [GitHub Releases](https://github.com/scaffoldly/kubectl-add/releases).
+Grab a binary from [GitHub Releases](https://github.com/scaffoldly/kubectl-add/releases)
+— each archive holds the `kubectl-add` binary plus the LICENSE, and every
+release is cosign-signed and SLSA-attested (verification in
+[SECURITY.md](./SECURITY.md)). Put `kubectl-add` on your `PATH` and kubectl
+discovers it as `kubectl add`.
 
 Or build from source:
 

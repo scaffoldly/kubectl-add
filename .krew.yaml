@@ -1,0 +1,66 @@
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: add
+spec:
+  version: {{ .TagName }}
+  homepage: https://github.com/scaffoldly/kubectl-add
+  shortDescription: Install anything into your cluster, server-side as you
+  description: |
+    Point kubectl-add at a YAML URL, a kustomization, a helm chart, a chart
+    repository, an OCI registry, or a git repo (GitHub, GitLab, Bitbucket).
+    It sniffs out what the reference is, resolves the installable artifact,
+    and applies it inside the cluster server-side — forwarding your own
+    credential into a short-lived Secret, so the apply runs as you and is
+    constrained by your RBAC. No ServiceAccount, no kubeconfig copied in.
+
+    Usage:
+      kubectl add <resource>            # resolve and apply
+      kubectl add <resource> --remove   # delete what it added
+  caveats: |
+    kubectl-add runs a throwaway pod that applies the manifest using your
+    forwarded credential. You need permission to create Secrets and Pods in
+    the target namespace, and to apply whatever the resource contains.
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      {{addURIAndSha "https://github.com/scaffoldly/kubectl-add/releases/download/{{ .TagName }}/kubectl-add_linux_amd64.zip" .TagName }}
+      bin: kubectl-add
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+      {{addURIAndSha "https://github.com/scaffoldly/kubectl-add/releases/download/{{ .TagName }}/kubectl-add_linux_arm64.zip" .TagName }}
+      bin: kubectl-add
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm
+      {{addURIAndSha "https://github.com/scaffoldly/kubectl-add/releases/download/{{ .TagName }}/kubectl-add_linux_arm.zip" .TagName }}
+      bin: kubectl-add
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      {{addURIAndSha "https://github.com/scaffoldly/kubectl-add/releases/download/{{ .TagName }}/kubectl-add_darwin_amd64.zip" .TagName }}
+      bin: kubectl-add
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      {{addURIAndSha "https://github.com/scaffoldly/kubectl-add/releases/download/{{ .TagName }}/kubectl-add_darwin_arm64.zip" .TagName }}
+      bin: kubectl-add
+    - selector:
+        matchLabels:
+          os: windows
+          arch: amd64
+      {{addURIAndSha "https://github.com/scaffoldly/kubectl-add/releases/download/{{ .TagName }}/kubectl-add_windows_amd64.zip" .TagName }}
+      bin: kubectl-add.exe
+    - selector:
+        matchLabels:
+          os: windows
+          arch: arm64
+      {{addURIAndSha "https://github.com/scaffoldly/kubectl-add/releases/download/{{ .TagName }}/kubectl-add_windows_arm64.zip" .TagName }}
+      bin: kubectl-add.exe

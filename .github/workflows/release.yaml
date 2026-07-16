@@ -13,15 +13,8 @@ on:
       - go.*
     tags:
       - v*
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/release.yaml
-      - cmd/**
-      - lib.go
-      - v1alpha1/**
-      - go.*
+  # No pull_request trigger: the draft is push-gated, so a PR build can't
+  # release, and ci.yml already validates that the code compiles.
 
 concurrency:
   # Queue rather than cancel: a canceled run mid-publish can strand a
@@ -80,7 +73,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - run: go build ./cmd/kubectl-add
       - uses: int128/go-release-action@9e1d6ec29fc6ffc2ba55f631baf4a73017d228e1 # v2.5.0
         with:
           binary: kubectl-add

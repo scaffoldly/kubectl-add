@@ -39,6 +39,19 @@ func TestManagedInstall(t *testing.T) {
 	}
 }
 
+func TestUpgradeCommand(t *testing.T) {
+	for manager, want := range map[string]string{
+		"Homebrew": "brew upgrade kubectl-add",
+		"krew":     "kubectl krew upgrade add",
+		"Nix":      "nix profile upgrade kubectl-add",
+		"unknown":  "your package manager",
+	} {
+		if got := upgradeCommand(manager); got != want {
+			t.Errorf("upgradeCommand(%q) = %q, want %q", manager, got, want)
+		}
+	}
+}
+
 func TestVerifyChecksum(t *testing.T) {
 	data := []byte("the release archive bytes")
 	sum := sha256.Sum256(data)

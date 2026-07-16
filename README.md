@@ -2,7 +2,7 @@
 
 `kubectl add` is a kubectl plugin that installs things into your cluster from
 whatever you point it at — a YAML URL, a kustomization, a helm chart, a helm
-chart repository, or a GitHub repo — and applies them **server-side**, so it
+chart repository, or a git repo — and applies them **server-side**, so it
 feels like native kubectl.
 
 You give it a resource; the plugin sniffs out what it is, resolves the
@@ -15,11 +15,11 @@ your RBAC and no kubeconfig is copied in.
 
 ## Features
 
-- 🧠 **Smart resolution** — point it at a YAML URL, a kustomization, a helm chart, a chart repo, or a GitHub repo; it sniffs out what it is.
+- 🧠 **Smart resolution** — point it at a YAML URL, a kustomization, a helm chart, a chart repo, or a git repo (GitHub, GitLab, Bitbucket); it sniffs out what it is.
 - ☁️ **Server-side apply** — runs `kubectl` inside the cluster; your local kubeconfig is never copied in.
 - 🔑 **Runs as you** — forwards your own credential into a short-lived Secret; the apply uses your identity and RBAC, no ServiceAccount, no escalation.
 - 🎛️ **Kustomize, built in-cluster** — relative resources, `bases`, nested kustomizations, and remote git/http references all resolve.
-- ⎈ **Helm, no tiller, no fuss** — renders charts client-side; installs from loose files, an HTTP chart repository, or a GitHub repo.
+- ⎈ **Helm, no tiller, no fuss** — renders charts client-side; installs from loose files, an HTTP chart repository, or a git repo.
 - 📌 **Pin what you want** — `?chart=` and `?version=` select straight from a repository index.
 - 🗑️ **Reversible** — `--remove` deletes exactly what you added.
 - 🪶 **Feels native** — one command, standard kubectl flags (`--namespace`, `-v`, kubeconfig).
@@ -75,7 +75,7 @@ kubectl add https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/e
 ### Helm
 
 A chart repository (its `index.yaml` is sniffed automatically), an OCI
-registry, a GitHub repo (defaults to the latest release and finds the chart),
+registry, a git repo (defaults to the latest release and finds the chart),
 or a chart served as loose `Chart.yaml` files over HTTP:
 
 ```sh
@@ -127,17 +127,22 @@ What `kubectl add` can resolve and install, by source and format:
 | --------------------------------------------------------- | ---------------- | ------------------------- | ---------------------------------------------- |
 | HTTP(S) URL                                               | ✅               | ✅                        | ✅ &nbsp;loose `Chart.yaml`, repo `index.yaml` |
 | GitHub &nbsp;(`org/repo`, `.git`, `…/tree/…`, `…/blob/…`) | ✅ &nbsp;`blob/` | ✅ &nbsp;root or a subdir | ✅ &nbsp;`charts/` or a subdir, full file set  |
+| GitLab &nbsp;(`…/-/tree/…`, `…/-/blob/…`, subgroups)      | ✅ &nbsp;`blob/` | ✅ &nbsp;root or a subdir | ✅ &nbsp;`charts/` or a subdir, full file set  |
+| Bitbucket &nbsp;(`…/src/…`)                               | ✅               | ✅ &nbsp;root or a subdir | ✅ &nbsp;`charts/` or a subdir, full file set  |
 | OCI &nbsp;(`oci://`)                                      | —                | —                         | ✅ &nbsp;registry, latest tag or pinned        |
 
 ✅ supported &nbsp;·&nbsp; 🚧 planned &nbsp;·&nbsp; — n/a
 
 Notes:
 
-- A bare `org/repo` resolves at the repo's latest release; a full GitHub URL
-  (`…/tree/<ref>/<path>` or `…/blob/<ref>/<file>`) pins the ref and subpath. All
-  resolve to `raw.githubusercontent.com`, and helm charts fetch their full file
-  set via the git tree (no conventional-path guessing). Other git hosts
-  (GitLab, Bitbucket) are not supported yet.
+- A bare `org/repo` resolves at the repo's latest release (GitHub default host);
+  a full URL pins the ref and subpath — GitHub/GitLab via `…/tree/<ref>/<path>`
+  or `…/blob/<ref>/<file>` (GitLab prefixes these with `/-/`), Bitbucket via
+  `…/src/<ref>/<path>`. Each resolves to its host's raw URL, and helm charts
+  fetch their full file set via the git tree (no conventional-path guessing).
+  Bitbucket has no releases, so a bare repo resolves at its latest tag (then the
+  main branch). Set `GITHUB_TOKEN` / `GITLAB_TOKEN` / `BITBUCKET_TOKEN` to raise
+  rate limits or reach private repos.
 - Kustomizations sourced from a URL support relative resources, `bases`, nested
   kustomizations, and remote git/http references. Some kustomize fields that
   reference local files are not yet materialized ([#1]).

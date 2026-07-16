@@ -2,8 +2,10 @@ name: CI
 
 on:
   push:
+    # No tags trigger: a tag points at a main commit that already passed CI
+    # (on its PR and the main push), so re-testing it is redundant. release.yaml
+    # owns tags (build + sign + publish).
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
     # Defaults are [opened, synchronize, reopened]. Add ready_for_review

@@ -14,11 +14,13 @@ import (
 )
 
 func TestManagedInstall(t *testing.T) {
-	sep := string(filepath.Separator)
+	// managedInstall normalizes separators, so slash literals cover every OS
+	// (and a backslash krew path, as Windows would produce).
 	managed := map[string]string{
-		filepath.Join("/opt/homebrew/Cellar/kubectl-add/0.1.0/bin", "kubectl-add"):         "Homebrew",
-		"/nix/store/abc-kubectl-add-0.1.0/bin/kubectl-add":                                 "Nix",
-		filepath.Join(os.Getenv("HOME"), ".krew", "store", "add", "v0.1.0", "kubectl-add"): "krew",
+		"/opt/homebrew/Cellar/kubectl-add/0.1.0/bin/kubectl-add": "Homebrew",
+		"/nix/store/abc-kubectl-add-0.1.0/bin/kubectl-add":       "Nix",
+		"/home/u/.krew/store/add/v0.1.0/kubectl-add":             "krew",
+		`C:\Users\u\.krew\store\add\v0.1.0\kubectl-add.exe`:      "krew",
 	}
 	for path, want := range managed {
 		if got, ok := managedInstall(path); !ok || got != want {
@@ -27,8 +29,8 @@ func TestManagedInstall(t *testing.T) {
 	}
 
 	unmanaged := []string{
-		filepath.Join(os.Getenv("HOME"), ".local", "bin", "kubectl_add_0.1.0"),
-		sep + "usr" + sep + "local" + sep + "bin" + sep + "kubectl_add_0.1.0",
+		"/home/u/.local/bin/kubectl_add_0.1.0",
+		"/usr/local/bin/kubectl_add_0.1.0",
 	}
 	for _, path := range unmanaged {
 		if got, ok := managedInstall(path); ok {

@@ -144,13 +144,15 @@ func locate() (*install, error) {
 // managedInstall reports whether the executable path belongs to a package
 // manager that owns upgrades (Homebrew, Nix, krew), so self-update defers.
 func managedInstall(exe string) (string, bool) {
-	sep := string(filepath.Separator)
+	// Normalize to forward slashes so the markers match on Windows too (krew
+	// installs there as ...\.krew\...).
+	slash := filepath.ToSlash(exe)
 	for _, m := range []struct{ marker, name string }{
-		{sep + "Cellar" + sep, "Homebrew"},
-		{sep + "nix" + sep + "store" + sep, "Nix"},
-		{sep + ".krew" + sep, "krew"},
+		{"/Cellar/", "Homebrew"},
+		{"/nix/store/", "Nix"},
+		{"/.krew/", "krew"},
 	} {
-		if strings.Contains(exe, m.marker) {
+		if strings.Contains(slash, m.marker) {
 			return m.name, true
 		}
 	}

@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	gitpath "path"
 	"strings"
 	"time"
 
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/helm"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/kustomize"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/internal/yaml"
 )
 
 const apiBase = "https://api.github.com"
@@ -53,27 +55,153 @@ func (r *Resolver) Detect(resource string) bool {
 	return false
 }
 
-// Resolve sniffs the repo tree at the latest release and routes to the
-// first format found: a chart under charts/ (preferring one named after
-// the repo), then a root kustomization.yaml.
+// Resolve routes a git reference to an installable artifact, honoring an
+// explicit ref and subpath from a full GitHub tree/blob URL and otherwise
+// sniffing the repo tree at the latest release. Resolved artifacts are
+// addressed by raw.githubusercontent.com URLs so their contents (and, for
+// charts, their full file set) can be fetched directly.
 func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 	repo, err := r.Repo(resource)
 	if err != nil {
 		return nil, err
 	}
 
-	tag, err := r.LatestRelease(resource)
+	ref, subpath, isBlob := parseRef(resource)
+	if ref == "" {
+		if ref, err = r.LatestRelease(resource); err != nil {
+			return nil, err
+		}
+	}
+
+	// A blob URL points at a single file; route it by basename.
+	if isBlob {
+		slog.Info("found file", "repo", repo, "ref", ref, "path", subpath)
+		return r.fileResolution(repo, ref, subpath)
+	}
+
+	paths, err := r.Tree(resource, ref)
 	if err != nil {
 		return nil, err
 	}
 
-	paths, err := r.Tree(resource, tag)
-	if err != nil {
-		return nil, err
+	// A tree URL with a subpath: install what lives in that directory.
+	if subpath != "" {
+		if contains(paths, subpath+"/Chart.yaml") {
+			return r.chartResolution(repo, ref, subpath, paths), nil
+		}
+		for _, base := range []string{"kustomization.yaml", "kustomization.yml", "Kustomization"} {
+			if contains(paths, subpath+"/"+base) {
+				slog.Info("found kustomization", "repo", repo, "ref", ref, "dir", subpath)
+				return kustomize.Resolution(r.Name(), r.rawURL(repo, ref, subpath+"/"+base)), nil
+			}
+		}
+		return nil, fmt.Errorf("git resolver: no installable format in %s/%s at %s", repo, subpath, ref)
 	}
 
-	// helm: a chart under charts/, preferring charts/<repo-name>.
+	// Bare repo: a chart under charts/ (preferring charts/<repo-name>),
+	// else a kustomization at the repo root.
 	name := strings.Split(repo, "/")[1]
+	if chart := findChart(paths, name); chart != "" {
+		return r.chartResolution(repo, ref, chart, paths), nil
+	}
+	for _, base := range []string{"kustomization.yaml", "kustomization.yml", "Kustomization"} {
+		if contains(paths, base) {
+			slog.Info("found kustomization", "repo", repo, "ref", ref)
+			return kustomize.Resolution(r.Name(), r.rawURL(repo, ref, base)), nil
+		}
+	}
+
+	// TODO: yaml manifests in well-known locations (deploy/, manifests/)
+	return nil, fmt.Errorf("git resolver: no installable format found in %s at %s", repo, ref)
+}
+
+// parseRef extracts the ref and subpath from a full GitHub tree/blob URL
+// (github.com/org/repo/tree/<ref>/<subpath> or .../blob/<ref>/<path>). It
+// returns empty values for bare repo references (org/repo, .git, git@),
+// leaving the ref to default to the latest release. A branch name containing
+// slashes is not disambiguated — the first segment is taken as the ref.
+func parseRef(resource string) (ref, subpath string, isBlob bool) {
+	for _, marker := range []struct {
+		sep  string
+		blob bool
+	}{{"/tree/", false}, {"/blob/", true}} {
+		i := strings.Index(resource, marker.sep)
+		if i < 0 {
+			continue
+		}
+		rest := strings.Trim(resource[i+len(marker.sep):], "/")
+		if rest == "" {
+			return "", "", false
+		}
+		parts := strings.SplitN(rest, "/", 2)
+		ref = parts[0]
+		if len(parts) == 2 {
+			subpath = parts[1]
+		}
+		return ref, subpath, marker.blob
+	}
+	return "", "", false
+}
+
+// fileResolution routes a single file (from a blob URL) by its basename.
+func (r *Resolver) fileResolution(repo, ref, path string) (*resolve.Resolution, error) {
+	u := r.rawURL(repo, ref, path)
+	switch base := gitpath.Base(path); {
+	case base == "Chart.yaml" || base == "Chart.yml":
+		return helm.Resolution(r.Name(), u), nil
+	case base == "kustomization.yaml" || base == "kustomization.yml" || base == "Kustomization":
+		return kustomize.Resolution(r.Name(), u), nil
+	case strings.HasSuffix(base, ".yaml") || strings.HasSuffix(base, ".yml"):
+		return yaml.Resolution(r.Name(), u), nil
+	default:
+		return nil, fmt.Errorf("git resolver: unsupported file %q", path)
+	}
+}
+
+// chartResolution builds a helm Resolution for the chart at dir, addressing
+// its Chart.yaml by raw URL and listing the chart's member files (relative to
+// dir) so discovery fetches the real file set rather than guessing.
+func (r *Resolver) chartResolution(repo, ref, dir string, paths []string) *resolve.Resolution {
+	slog.Info("found helm chart", "repo", repo, "chart", dir, "ref", ref)
+	res := helm.Resolution(r.Name(), r.rawURL(repo, ref, dir+"/Chart.yaml"))
+
+	prefix := dir + "/"
+	for _, p := range paths {
+		rel := strings.TrimPrefix(p, prefix)
+		if rel != p && rel != "Chart.yaml" && isChartFile(rel) {
+			res.Files = append(res.Files, rel)
+		}
+	}
+	return res
+}
+
+// isChartFile reports whether a chart-relative path is one helm renders, so
+// discovery skips docs/changelogs and only fetches what the chart needs.
+func isChartFile(rel string) bool {
+	switch rel {
+	case "values.yaml", "values.schema.json", "Chart.lock", ".helmignore":
+		return true
+	}
+	if strings.HasSuffix(rel, ".tpl") {
+		return true
+	}
+	return strings.HasPrefix(rel, "templates/") ||
+		strings.HasPrefix(rel, "charts/") ||
+		strings.HasPrefix(rel, "crds/")
+}
+
+// rawURL builds a raw.githubusercontent.com URL for a file at a ref.
+func (r *Resolver) rawURL(repo, ref, path string) *url.URL {
+	return &url.URL{
+		Scheme: "https",
+		Host:   "raw.githubusercontent.com",
+		Path:   "/" + repo + "/" + ref + "/" + path,
+	}
+}
+
+// findChart returns the chart directory under charts/, preferring
+// charts/<name>, or "" when none is found.
+func findChart(paths []string, name string) string {
 	chart := ""
 	for _, path := range paths {
 		if !strings.HasPrefix(path, "charts/") || !strings.HasSuffix(path, "/Chart.yaml") {
@@ -81,36 +209,22 @@ func (r *Resolver) Resolve(resource string) (*resolve.Resolution, error) {
 		}
 		dir := strings.TrimSuffix(path, "/Chart.yaml")
 		if dir == "charts/"+name {
-			chart = dir
-			break
+			return dir
 		}
 		if chart == "" {
 			chart = dir
 		}
 	}
-	if chart != "" {
-		slog.Info("found helm chart", "repo", repo, "chart", chart, "tag", tag)
-		u, err := url.Parse(fmt.Sprintf("https://github.com/%s/tree/%s/%s", repo, tag, chart))
-		if err != nil {
-			return nil, fmt.Errorf("git resolver: building chart URL: %w", err)
-		}
-		return helm.Resolution(r.Name(), u), nil
-	}
+	return chart
+}
 
-	// kustomize: kustomization.yaml at the repo root.
-	for _, path := range paths {
-		if path == "kustomization.yaml" {
-			slog.Info("found kustomization", "repo", repo, "tag", tag)
-			u, err := url.Parse(fmt.Sprintf("https://github.com/%s/tree/%s", repo, tag))
-			if err != nil {
-				return nil, fmt.Errorf("git resolver: building kustomization URL: %w", err)
-			}
-			return kustomize.Resolution(r.Name(), u), nil
+func contains(paths []string, target string) bool {
+	for _, p := range paths {
+		if p == target {
+			return true
 		}
 	}
-
-	// TODO: yaml manifests in well-known locations (deploy/, manifests/)
-	return nil, fmt.Errorf("git resolver: no installable format found in %s at %s", repo, tag)
+	return false
 }
 
 // Repo normalizes a detected resource into its "org/repo" slug. Extra path
@@ -161,6 +275,7 @@ func (r *Resolver) Tree(resource string, ref string) ([]string, error) {
 	var tree struct {
 		Tree []struct {
 			Path string `json:"path"`
+			Type string `json:"type"`
 		} `json:"tree"`
 		// Truncated is set on huge repos; paths are then incomplete but
 		// still usable for sniffing well-known locations.
@@ -170,11 +285,15 @@ func (r *Resolver) Tree(resource string, ref string) ([]string, error) {
 		return nil, err
 	}
 
+	// Only blobs (files); directory entries would be fetched as files and
+	// 404 during discovery.
 	paths := make([]string, 0, len(tree.Tree))
 	for _, entry := range tree.Tree {
-		paths = append(paths, entry.Path)
+		if entry.Type == "blob" {
+			paths = append(paths, entry.Path)
+		}
 	}
-	slog.Debug("fetched repo tree", "repo", repo, "ref", ref, "paths", len(paths), "truncated", tree.Truncated)
+	slog.Debug("fetched repo tree", "repo", repo, "ref", ref, "files", len(paths), "truncated", tree.Truncated)
 	return paths, nil
 }
 

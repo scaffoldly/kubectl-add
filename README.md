@@ -123,16 +123,21 @@ The connection is inferred from your kubeconfig, or supply one explicitly with
 
 What `kubectl add` can resolve and install, by source and format:
 
-| Source                                                 | YAML    | Kustomize                          | Helm                                                 |
-| ------------------------------------------------------ | ------- | ---------------------------------- | ---------------------------------------------------- |
-| HTTP(S) URL                                            | ✅      | ✅                                 | ✅ &nbsp;loose `Chart.yaml`, repo `index.yaml`       |
-| GitHub repo &nbsp;(`org/repo`, `.git`, `github.com/…`) | 🚧 [#3] | ✅ &nbsp;root `kustomization.yaml` | ✅ &nbsp;chart under `charts/` at the latest release |
-| OCI &nbsp;(`oci://`)                                   | —       | —                                  | ✅ &nbsp;registry, latest tag or pinned              |
+| Source                                                    | YAML             | Kustomize                 | Helm                                           |
+| --------------------------------------------------------- | ---------------- | ------------------------- | ---------------------------------------------- |
+| HTTP(S) URL                                               | ✅               | ✅                        | ✅ &nbsp;loose `Chart.yaml`, repo `index.yaml` |
+| GitHub &nbsp;(`org/repo`, `.git`, `…/tree/…`, `…/blob/…`) | ✅ &nbsp;`blob/` | ✅ &nbsp;root or a subdir | ✅ &nbsp;`charts/` or a subdir, full file set  |
+| OCI &nbsp;(`oci://`)                                      | —                | —                         | ✅ &nbsp;registry, latest tag or pinned        |
 
 ✅ supported &nbsp;·&nbsp; 🚧 planned &nbsp;·&nbsp; — n/a
 
 Notes:
 
+- A bare `org/repo` resolves at the repo's latest release; a full GitHub URL
+  (`…/tree/<ref>/<path>` or `…/blob/<ref>/<file>`) pins the ref and subpath. All
+  resolve to `raw.githubusercontent.com`, and helm charts fetch their full file
+  set via the git tree (no conventional-path guessing). Other git hosts
+  (GitLab, Bitbucket) are not supported yet.
 - Kustomizations sourced from a URL support relative resources, `bases`, nested
   kustomizations, and remote git/http references. Some kustomize fields that
   reference local files are not yet materialized ([#1]).
@@ -141,7 +146,6 @@ Notes:
   `?chart=` and `?version=` pin the selection.
 
 [#1]: https://github.com/scaffoldly/kubectl-add/issues/1
-[#3]: https://github.com/scaffoldly/kubectl-add/issues/3
 
 ## How it works
 

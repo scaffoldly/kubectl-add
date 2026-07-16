@@ -23,7 +23,7 @@ func TestDiscoverAndRender(t *testing.T) {
 			"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-cfg\ndata:\n  message: {{ .Values.message | quote }}\n"),
 	}
 
-	chart, err := Discover(context.Background(), chartURL, fakeFetch(files))
+	chart, err := Discover(context.Background(), chartURL, nil, fakeFetch(files))
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}

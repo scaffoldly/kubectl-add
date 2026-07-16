@@ -37,6 +37,10 @@ type Add struct {
 	Resource string
 	// Format is the resolved artifact format, set by URL.
 	Format resolve.Format
+	// Files, set by URL, lists a resolved helm chart's member files (relative
+	// to the chart URL) when the transport could enumerate them; empty
+	// otherwise.
+	Files []string
 	// Namespace scopes the apply.
 	Namespace string
 	// Debug enables debug logging and kubectl -v=4.
@@ -243,6 +247,7 @@ func (a *Add) URL() *url.URL {
 		return nil
 	}
 	a.Format = resolution.Format
+	a.Files = resolution.Files
 	slog.Info("resolved", "resolver", resolution.Resolver, "format", resolution.Format, "url", resolution.URL)
 	return resolution.URL
 }
@@ -329,8 +334,9 @@ func (a *Add) installHelm(ctx context.Context, chartURL *url.URL) error {
 		// A packaged chart (OCI registry or .tgz), pulled and loaded directly.
 		chart, err = helm.DiscoverArchive(ctx, chartURL, a.get)
 	case path.Base(chartURL.Path) == "Chart.yaml" || path.Base(chartURL.Path) == "Chart.yml":
-		// Loose chart files served over HTTP, discovered by convention.
-		chart, err = helm.Discover(ctx, chartURL, a.get)
+		// Loose chart files: the real member list when the transport could
+		// enumerate it (git), else convention-probed (http).
+		chart, err = helm.Discover(ctx, chartURL, a.Files, a.get)
 	default:
 		// A chart repository, resolved through its index.yaml.
 		chart, err = helm.DiscoverRepo(ctx, chartURL, a.get)

@@ -55,9 +55,12 @@ type Chart struct {
 	DefaultValues []byte
 }
 
-// Discover fetches Chart.yaml and the conventional chart files relative to
-// chartURL and loads them into a chart.
-func Discover(ctx context.Context, chartURL *url.URL, fetch Fetch) (*Chart, error) {
+// Discover fetches Chart.yaml and the chart's other files relative to
+// chartURL and loads them into a chart. When members is non-empty (a
+// transport that can list a directory, e.g. git) those exact files are
+// fetched; otherwise a conventional set of paths is probed, since HTTP has no
+// directory listing.
+func Discover(ctx context.Context, chartURL *url.URL, members []string, fetch Fetch) (*Chart, error) {
 	chartYAML, found, err := fetch(ctx, chartURL)
 	if err != nil {
 		return nil, fmt.Errorf("helm: fetching Chart.yaml: %w", err)
@@ -66,10 +69,15 @@ func Discover(ctx context.Context, chartURL *url.URL, fetch Fetch) (*Chart, erro
 		return nil, fmt.Errorf("helm: no Chart.yaml at %s", chartURL)
 	}
 
+	probe := members
+	if len(probe) == 0 {
+		probe = conventionalPaths
+	}
+
 	files := []*loader.BufferedFile{{Name: "Chart.yaml", Data: chartYAML}}
 	var defaultValues []byte
 
-	for _, rel := range conventionalPaths {
+	for _, rel := range probe {
 		u := chartURL.ResolveReference(&url.URL{Path: rel})
 		content, found, err := fetch(ctx, u)
 		if err != nil {

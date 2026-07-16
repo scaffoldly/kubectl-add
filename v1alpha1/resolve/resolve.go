@@ -26,6 +26,12 @@ type Resolution struct {
 	Format Format
 	// URL locates the resolved artifact (manifest, chart, kustomization).
 	URL *url.URL
+	// Files, when set, lists the artifact's member files as paths relative
+	// to URL's directory — used for helm charts sourced from a transport
+	// that can enumerate a directory (git), so discovery fetches the real
+	// files instead of guessing conventional paths. Empty for transports
+	// that cannot list directories (http).
+	Files []string
 }
 
 // Resolver is a transport: it recognizes where a resource lives (git repo,

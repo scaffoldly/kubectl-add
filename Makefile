@@ -48,5 +48,7 @@ test:
 test-e2e:
 	go test -tags e2e -count=1 ./test/e2e/ -v -timeout 15m
 
-clean:
+# Remove the repo-root build artifact and the local dev install (symlink +
+# versioned binaries in INSTALL_DIR).
+clean: uninstall
 	rm -f $(BINARY)

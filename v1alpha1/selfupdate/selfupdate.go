@@ -132,11 +132,10 @@ func update(ctx context.Context, current string, client *http.Client, force bool
 	return nil
 }
 
-// upgradeCommand is the command that updates a package-manager-owned install.
+// upgradeCommand is the command that updates a manager-owned install we defer
+// to (krew, Nix; Homebrew self-updates instead).
 func upgradeCommand(manager string) string {
 	switch manager {
-	case "Homebrew":
-		return "brew upgrade kubectl-add"
 	case "krew":
 		return "kubectl krew upgrade add"
 	case "Nix":
@@ -146,11 +145,15 @@ func upgradeCommand(manager string) string {
 	}
 }
 
-// install describes an install kubectl-add owns: a versioned binary reached via
-// a kubectl-add symlink in a writable directory.
+// install describes how to swap in a new binary. One of two strategies:
+//   - symlink: our versioned-binary + kubectl-add symlink layout (curl
+//     installer, make install) — download beside, repoint the symlink.
+//   - in-place: a single binary (Homebrew tap, a bare download) — replace the
+//     file itself. exe is set for this strategy, dir/link for the other.
 type install struct {
-	dir  string // directory holding the versioned binaries and the symlink
-	link string // the kubectl-add symlink kubectl discovers
+	dir  string // symlink strategy: dir holding versioned binaries + the symlink
+	link string // symlink strategy: the kubectl-add symlink kubectl discovers
+	exe  string // in-place strategy: the binary file to replace
 }
 
 // resolveExe returns the path of the running binary with symlinks resolved, so
@@ -166,33 +169,46 @@ func resolveExe() (string, error) {
 	return exe, nil
 }
 
-// locate confirms the running binary is one we own — the versioned file in a
-// writable directory beside its kubectl-add symlink — and returns its layout.
+// locate picks the swap strategy for the running binary: the versioned+symlink
+// layout when present, otherwise an in-place replacement of the single binary.
 func locate(exe string) (*install, error) {
-	if !strings.HasPrefix(filepath.Base(exe), "kubectl_add_") {
-		return nil, fmt.Errorf("not a versioned install; self-update needs the symlink layout")
+	// Our layout: a kubectl_add_<version> file beside a kubectl-add symlink.
+	if strings.HasPrefix(filepath.Base(exe), "kubectl_add_") {
+		dir := filepath.Dir(exe)
+		link := filepath.Join(dir, "kubectl-add")
+		if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if !writable(dir) {
+				return nil, fmt.Errorf("install dir %s is not writable", dir)
+			}
+			return &install{dir: dir, link: link}, nil
+		}
 	}
 
-	dir := filepath.Dir(exe)
-	link := filepath.Join(dir, "kubectl-add")
-	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		return nil, fmt.Errorf("no kubectl-add symlink at %s", link)
+	// Any other install we can write (Homebrew tap, a bare downloaded binary):
+	// replace the file in place. Renaming a new file over a running binary is
+	// safe on unix (the process keeps its open inode); Windows can't, so defer.
+	if runtime.GOOS == "windows" {
+		return nil, fmt.Errorf("in-place update is unsupported on windows; reinstall to update")
 	}
-	if !writable(dir) {
-		return nil, fmt.Errorf("install dir %s is not writable", dir)
+	if !writable(filepath.Dir(exe)) {
+		return nil, fmt.Errorf("%s is not writable; reinstall to update", exe)
 	}
-	return &install{dir: dir, link: link}, nil
+	return &install{exe: exe}, nil
 }
 
 // managedInstall reports whether the executable path belongs to a package
-// manager that owns upgrades (Homebrew, Nix, krew), so self-update defers.
+// manager that owns upgrades AND whose store we must not write, so self-update
+// defers to it. Homebrew is deliberately absent: the tap ships the normal
+// auto-updating build (per the channel map in #10), and its Cellar is
+// user-writable, so a tap install self-updates in place; the from-source
+// homebrew-core build disables self-update at compile time (-tags noselfupdate)
+// instead. krew and Nix own upgrades through read-only / managed stores.
 func managedInstall(exe string) (string, bool) {
 	// Normalize backslashes to forward slashes so the markers match on Windows
 	// too (krew installs there as ...\.krew\...), regardless of which OS
 	// produced the path.
 	slash := strings.ReplaceAll(exe, `\`, "/")
 	for _, m := range []struct{ marker, name string }{
-		{"/Cellar/", "Homebrew"},
 		{"/nix/store/", "Nix"},
 		{"/.krew/", "krew"},
 	} {
@@ -239,8 +255,14 @@ func apply(ctx context.Context, client *http.Client, inst *install, latest *semv
 		return err
 	}
 
-	// Write the new versioned binary atomically (temp + rename within dir),
-	// mirroring `make link`'s naming: kubectl_add_<version>, no leading v.
+	// In-place strategy: atomically replace the single binary file.
+	if inst.exe != "" {
+		return writeExecutable(filepath.Dir(inst.exe), inst.exe, binary)
+	}
+
+	// Symlink strategy: write the new versioned binary atomically (temp +
+	// rename within dir), mirroring `make link`'s naming (kubectl_add_<version>,
+	// no leading v).
 	newName := "kubectl_add_" + latest.String()
 	newPath := filepath.Join(inst.dir, newName)
 	if err := writeExecutable(inst.dir, newPath, binary); err != nil {

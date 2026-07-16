@@ -29,11 +29,13 @@ change the formula shape, edit `formula.rb.tmpl` here and copy it into the tap
 
 ## Self-update interaction
 
-A tap-installed binary lives under `*/Cellar/*`, which the self-updater treats
-as a managed install: it never swaps the binary in place (that would leave
-Homebrew's receipt stale), and instead nudges `brew upgrade kubectl-add` when a
-newer release exists. Keeping this tap bumped promptly (the publish job does
-so automatically) keeps that nudge accurate.
+The tap ships the normal **auto-updating** build (per the channel map in #10). A
+tap-installed binary self-updates in place: `*/Cellar/*` is user-writable, so
+when a newer release exists the updater verifies and replaces the binary
+directly. Homebrew's receipt goes momentarily stale, but the tap re-renders the
+formula hourly, so `brew upgrade kubectl-add` converges on the same version — no
+downgrade in practice.
 
 The from-source, no-self-update **homebrew-core** formula is a separate, later
-endgame tracked in #23.
+endgame (#23); it opts out at compile time with `-tags noselfupdate`, since
+runtime `*/Cellar/*` detection can't tell a core install from a tap one.

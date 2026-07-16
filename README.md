@@ -38,11 +38,18 @@ your RBAC and no kubeconfig is copied in.
      krew-release-bot; `kubectl krew install add` lands once the first
      krew-index submission is accepted. See #2. -->
 
-Grab a binary from [GitHub Releases](https://github.com/scaffoldly/kubectl-add/releases)
-— each archive holds the `kubectl-add` binary plus the LICENSE, and every
-release is cosign-signed and SLSA-attested (verification in
-[SECURITY.md](./SECURITY.md)). Put `kubectl-add` on your `PATH` and kubectl
-discovers it as `kubectl add`.
+**Homebrew** (macOS and Linux):
+
+```sh
+brew tap scaffoldly/tap
+brew install kubectl-add
+```
+
+Or grab a binary from
+[GitHub Releases](https://github.com/scaffoldly/kubectl-add/releases) — each
+archive holds the `kubectl-add` binary plus the LICENSE, and every release is
+cosign-signed and SLSA-attested (verification in [SECURITY.md](./SECURITY.md)).
+Put `kubectl-add` on your `PATH` and kubectl discovers it as `kubectl add`.
 
 Or build from source:
 

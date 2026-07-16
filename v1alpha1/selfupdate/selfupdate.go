@@ -67,9 +67,23 @@ func update(ctx context.Context, current string, client *http.Client, force bool
 		return fmt.Errorf("this is not a release build (version %q); install a release to enable updates", current)
 	}
 
-	inst, err := locate()
+	exe, err := resolveExe()
 	if err != nil {
 		return err
+	}
+
+	// A package manager owns upgrades for its installs: never swap the binary
+	// (a stale brew/krew/nix receipt is worse than being a release behind),
+	// but still do the version check so we can nudge the right command.
+	manager, managed := managedInstall(exe)
+
+	// For an install we own, confirm the versioned+symlink layout before any
+	// network call; a bare binary bails here.
+	var inst *install
+	if !managed {
+		if inst, err = locate(exe); err != nil {
+			return err
+		}
 	}
 
 	if !force {
@@ -89,7 +103,21 @@ func update(ctx context.Context, current string, client *http.Client, force bool
 	if err != nil {
 		return fmt.Errorf("unparseable release tag %q: %w", tag, err)
 	}
-	if !latest.GreaterThan(cur) {
+	upToDate := !latest.GreaterThan(cur)
+
+	if managed {
+		if upToDate {
+			if force {
+				fmt.Fprintf(os.Stderr, "kubectl-add is up to date (%s)\n", current)
+			}
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "kubectl-add %s is available (installed v%s); update with: %s\n",
+			tag, cur.String(), upgradeCommand(manager))
+		return nil
+	}
+
+	if upToDate {
 		slog.Debug("already up to date", "current", current, "latest", tag)
 		if force {
 			fmt.Fprintf(os.Stderr, "kubectl-add is up to date (%s)\n", current)
@@ -104,6 +132,20 @@ func update(ctx context.Context, current string, client *http.Client, force bool
 	return nil
 }
 
+// upgradeCommand is the command that updates a package-manager-owned install.
+func upgradeCommand(manager string) string {
+	switch manager {
+	case "Homebrew":
+		return "brew upgrade kubectl-add"
+	case "krew":
+		return "kubectl krew upgrade add"
+	case "Nix":
+		return "nix profile upgrade kubectl-add"
+	default:
+		return "your package manager"
+	}
+}
+
 // install describes an install kubectl-add owns: a versioned binary reached via
 // a kubectl-add symlink in a writable directory.
 type install struct {
@@ -111,21 +153,22 @@ type install struct {
 	link string // the kubectl-add symlink kubectl discovers
 }
 
-// locate resolves the running install and refuses anything that isn't the
-// symlink layout in a writable, non-managed directory.
-func locate() (*install, error) {
+// resolveExe returns the path of the running binary with symlinks resolved, so
+// the versioned file (not the kubectl-add symlink) is what we inspect.
+func resolveExe() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("resolving executable: %w", err)
+		return "", fmt.Errorf("resolving executable: %w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
+	return exe, nil
+}
 
-	if manager, ok := managedInstall(exe); ok {
-		return nil, fmt.Errorf("managed install (%s); update via that package manager", manager)
-	}
-
+// locate confirms the running binary is one we own — the versioned file in a
+// writable directory beside its kubectl-add symlink — and returns its layout.
+func locate(exe string) (*install, error) {
 	if !strings.HasPrefix(filepath.Base(exe), "kubectl_add_") {
 		return nil, fmt.Errorf("not a versioned install; self-update needs the symlink layout")
 	}

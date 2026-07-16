@@ -73,6 +73,9 @@ type Add struct {
 	// Update forces an immediate check-and-update, then exits without running
 	// a command.
 	Update bool
+	// GitHubToken authenticates the update check's GitHub API call, lifting the
+	// unauthenticated rate limit. Falls back to the GITHUB_TOKEN env var.
+	GitHubToken string
 
 	// err carries the first builder failure to Run.
 	err error
@@ -128,6 +131,9 @@ func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
 	a.WithNoEdit(noEdit)
 	if update, _ := cmd.Flags().GetBool("update"); update {
 		a.WithUpdate(true)
+	}
+	if token, _ := cmd.Flags().GetString("github-token"); token != "" {
+		a.WithGitHubToken(token)
 	}
 	if len(args) > 0 {
 		a.WithResource(args[0])
@@ -275,6 +281,23 @@ func (a *Add) WithUpdate(update bool) *Add {
 	return a
 }
 
+// WithGitHubToken sets the token used to authenticate the self-update's GitHub
+// API call, lifting the unauthenticated rate limit. Empty falls back to the
+// GITHUB_TOKEN env var.
+func (a *Add) WithGitHubToken(token string) *Add {
+	a.GitHubToken = token
+	return a
+}
+
+// githubToken resolves the token for the update check: the explicit input, else
+// the GITHUB_TOKEN environment variable.
+func (a *Add) githubToken() string {
+	if a.GitHubToken != "" {
+		return a.GitHubToken
+	}
+	return os.Getenv("GITHUB_TOKEN")
+}
+
 // URL distills Resource through the resolver registry into the URL to
 // apply, recording the resolved Format on the way. Returns nil on failure
 // and records the cause in a.err for Run to surface.
@@ -302,13 +325,13 @@ func (a *Add) Run() error {
 
 	// --update: self-update on demand, then exit without running a command.
 	if a.Update {
-		return selfupdate.Update(ctx, version.String(), httpclient.Default())
+		return selfupdate.Update(ctx, version.String(), a.githubToken(), httpclient.Default())
 	}
 
 	// Keep the binary current before doing the requested work. Throttled to
 	// once per day and fail-open — a swapped binary takes effect next run.
 	if a.AutoUpdate {
-		selfupdate.AutoUpdate(ctx, version.String(), httpclient.Default())
+		selfupdate.AutoUpdate(ctx, version.String(), a.githubToken(), httpclient.Default())
 	}
 
 	manifest := a.URL(ctx)

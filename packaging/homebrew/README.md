@@ -14,19 +14,18 @@ brew install kubectl-add
   placeholders for the version and per-arch sha256s.
 - [`render.sh`](./render.sh) fills the template for a release tag by fetching
   that release's archives and hashing them: `render.sh v0.2.0 > kubectl-add.rb`.
-- On every published release, the `homebrew` job in
-  [`.github/workflows/publish.yaml`](../../.github/workflows/publish.yaml) runs
-  `render.sh` and pushes the result to `scaffoldly/homebrew-tap` as
-  `Formula/kubectl-add.rb`.
+- The tap **updates itself**: `scaffoldly/homebrew-tap` runs a scheduled
+  workflow (`update-formula.yml`) that reads this repo's latest public release,
+  re-renders the formula with copies of `render.sh` + `formula.rb.tmpl` it
+  keeps, and commits with its own `GITHUB_TOKEN`. No cross-repo token or secret
+  lives here; this repo's `render.sh`/`formula.rb.tmpl` are the canonical
+  source those copies track.
 
-## One-time setup (maintainers)
+## Setup (done)
 
-1. Create the public repo **`scaffoldly/homebrew-tap`** (the name must start
-   with `homebrew-` for `brew tap scaffoldly/tap` to resolve).
-2. Add a repository secret **`HOMEBREW_TAP_TOKEN`** to this repo: a PAT (or
-   fine-grained token) with `contents: write` on `scaffoldly/homebrew-tap`. The
-   publish job skips cleanly until this secret exists.
-3. Publish (or re-publish) a release; the job populates the tap.
+The tap repo (`scaffoldly/homebrew-tap`) exists and self-updates hourly. To
+change the formula shape, edit `formula.rb.tmpl` here and copy it into the tap
+(or let the next render pick it up if you keep them in sync).
 
 ## Self-update interaction
 

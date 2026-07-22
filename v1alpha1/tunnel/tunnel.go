@@ -38,6 +38,8 @@ type Tunnel struct {
 	ctx        context.Context
 	debug      bool
 	verbose    bool
+	install    bool
+	remove     bool
 
 	log *slog.Logger
 	err error
@@ -95,6 +97,19 @@ func (t *Tunnel) logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
+// WithInstall runs a persistent in-cluster tunnel (a libtunnel Deployment)
+// instead of a local one, and prints its public URL.
+func (t *Tunnel) WithInstall(install bool) *Tunnel {
+	t.install = install
+	return t
+}
+
+// WithRemove deletes a previously installed in-cluster tunnel.
+func (t *Tunnel) WithRemove(remove bool) *Tunnel {
+	t.remove = remove
+	return t
+}
+
 // WithContext threads cancellation into Run; closing it (e.g. on SIGINT) tears
 // the tunnel down. Defaults to context.Background.
 func (t *Tunnel) WithContext(ctx context.Context) *Tunnel {
@@ -114,10 +129,20 @@ func (t *Tunnel) Run(ctx context.Context) error {
 	if t.restConfig == nil {
 		return fmt.Errorf("no REST config: WithRESTConfig is required")
 	}
+	if t.install && t.remove {
+		return fmt.Errorf("--install and --remove are mutually exclusive")
+	}
 	t.log = t.logger()
 
-	if name, isService := parseTarget(t.target); isService {
-		return t.runService(ctx, name)
+	if t.remove {
+		return t.runRemove(ctx)
+	}
+	if t.install {
+		return t.runInstall(ctx)
+	}
+
+	if name, port, isService := parseTarget(t.target); isService {
+		return t.runService(ctx, name, port)
 	}
 	return t.runAPIServer(ctx)
 }
@@ -151,7 +176,7 @@ func (t *Tunnel) runAPIServer(ctx context.Context) error {
 // the API server against the cluster CA — and hands its loopback listener to
 // libtunnel. The proxy injects no credentials, so the caller needs the RBAC to
 // reach services/proxy.
-func (t *Tunnel) runService(ctx context.Context, name string) error {
+func (t *Tunnel) runService(ctx context.Context, name, port string) error {
 	target, err := url.Parse(t.restConfig.Host)
 	if err != nil {
 		return fmt.Errorf("parsing API server URL %q: %w", t.restConfig.Host, err)
@@ -161,7 +186,11 @@ func (t *Tunnel) runService(ctx context.Context, name string) error {
 		return err
 	}
 
-	pathPrefix := fmt.Sprintf("/api/v1/namespaces/%s/services/%s/proxy", t.namespace, name)
+	svc := name
+	if port != "" {
+		svc = name + ":" + port
+	}
+	pathPrefix := fmt.Sprintf("/api/v1/namespaces/%s/services/%s/proxy", t.namespace, svc)
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		// Stream responses as they arrive so watch/exec/log endpoints work.
@@ -262,9 +291,9 @@ func (t *Tunnel) transport() (*http.Transport, error) {
 
 // parseTarget resolves the positional argument into a target. Empty or
 // "kubernetes" (with or without a svc/ prefix) is the API server; anything else
-// is a Service of that name. Returns the bare service name and whether the
-// target is a Service.
-func parseTarget(target string) (name string, isService bool) {
+// is a Service, optionally with a ":port" suffix. Returns the bare service
+// name, the port ("" if none), and whether the target is a Service.
+func parseTarget(target string) (name, port string, isService bool) {
 	target = strings.TrimSpace(target)
 	for _, prefix := range []string{"svc/", "service/", "services/"} {
 		if rest, ok := strings.CutPrefix(target, prefix); ok {
@@ -273,9 +302,12 @@ func parseTarget(target string) (name string, isService bool) {
 		}
 	}
 	if target == "" || target == "kubernetes" {
-		return "", false
+		return "", "", false
 	}
-	return target, true
+	if i := strings.LastIndex(target, ":"); i >= 0 {
+		return target[:i], target[i+1:], true
+	}
+	return target, "", true
 }
 
 // singleJoiningSlash joins two URL path segments with exactly one slash.

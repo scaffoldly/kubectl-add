@@ -2,11 +2,14 @@
 // through it — to the public internet through a Cloudflare quick tunnel
 // (github.com/cnuss/libtunnel), driven entirely in-process.
 //
-// The tunnel is a raw forwarder: it re-originates TLS to the API server
-// trusting only the cluster CA and injects no credentials of its own. Callers
-// hitting the public URL must authenticate themselves exactly as they would
-// against the API server directly (a Service target routes through the API
-// server's services/proxy subresource, so the caller needs the matching RBAC).
+// The tunnel is a raw forwarder that injects no credentials: callers hitting
+// the public URL authenticate themselves exactly as they would against the API
+// server directly. The default (API server) target points libtunnel straight
+// at the current context's cluster URL (WithLocalURL), which skips origin TLS
+// verification. A Service target routes through the API server's services/proxy
+// subresource — a path WithLocalURL cannot carry — so it runs a local reverse
+// proxy that re-originates to the API server verified against the cluster CA;
+// the caller needs the matching services/proxy RBAC.
 package tunnel
 
 import (
@@ -82,9 +85,66 @@ func (t *Tunnel) Run(ctx context.Context) error {
 		return fmt.Errorf("no REST config: WithRESTConfig is required")
 	}
 
-	proxy, describe, err := t.reverseProxy()
+	if name, isService := parseTarget(t.target); isService {
+		return t.runService(ctx, name)
+	}
+	return t.runAPIServer(ctx)
+}
+
+// runAPIServer tunnels straight to the current context's cluster URL. libtunnel
+// dials the API server itself as the origin (WithLocalURL), skipping origin TLS
+// verification — the API server's private-CA cert would otherwise fail — and
+// forwarding requests untouched, so callers still authenticate themselves.
+//
+// A URL origin has no tunnel-owned listener and no Close handle: the tunnel
+// runs until the process exits (the foreground command's SIGINT) or it fails.
+func (t *Tunnel) runAPIServer(ctx context.Context) error {
+	host, err := url.Parse(t.restConfig.Host)
+	if err != nil {
+		return fmt.Errorf("parsing API server URL %q: %w", t.restConfig.Host, err)
+	}
+	// WithLocalURL uses only the scheme and host; drop everything else.
+	origin := &url.URL{Scheme: host.Scheme, Host: host.Host}
+
+	tun := libtunnel.New(libtunnel.Cloudflare()).
+		WithLogger(slog.Default()).
+		WithContext(ctx).
+		WithLocalURL(origin)
+
+	return t.serve(ctx, tun, "apiserver "+origin.Host, nil)
+}
+
+// runService tunnels to a Service through the API server's services/proxy
+// subresource. The subresource needs a path prefix that WithLocalURL cannot
+// carry, so this path runs a local reverse proxy — which also lets it verify
+// the API server against the cluster CA — and hands its loopback listener to
+// libtunnel. The proxy injects no credentials, so the caller needs the RBAC to
+// reach services/proxy.
+func (t *Tunnel) runService(ctx context.Context, name string) error {
+	target, err := url.Parse(t.restConfig.Host)
+	if err != nil {
+		return fmt.Errorf("parsing API server URL %q: %w", t.restConfig.Host, err)
+	}
+	transport, err := t.transport()
 	if err != nil {
 		return err
+	}
+
+	pathPrefix := fmt.Sprintf("/api/v1/namespaces/%s/services/%s/proxy", t.namespace, name)
+	proxy := &httputil.ReverseProxy{
+		Transport: transport,
+		// Stream responses as they arrive so watch/exec/log endpoints work.
+		FlushInterval: -1,
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.Host = target.Host
+			req.URL.Path = singleJoiningSlash(pathPrefix, req.URL.Path)
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			slog.Debug("tunnel upstream error", "err", err)
+			w.WriteHeader(http.StatusBadGateway)
+		},
 	}
 
 	tun := libtunnel.New(libtunnel.Cloudflare()).
@@ -95,16 +155,24 @@ func (t *Tunnel) Run(ctx context.Context) error {
 	if lis == nil {
 		return fmt.Errorf("opening tunnel: %w", tun.Err())
 	}
-
-	// Serve the raw forwarder on the loopback listener libtunnel dials as its
-	// origin; the edge terminates TLS at Cloudflare and forwards plain HTTP to
-	// this listener, which re-originates to the API server.
+	// libtunnel dials this loopback listener as its origin; the reverse proxy
+	// re-originates (CA-verified) to the API server's services/proxy path.
 	server := &http.Server{Handler: proxy}
 	go func() { _ = server.Serve(lis) }()
 
+	return t.serve(ctx, tun, fmt.Sprintf("service %s/%s", t.namespace, name), func() { _ = server.Close() })
+}
+
+// serve waits for the tunnel to come up, prints its public URL, and blocks
+// until the context is canceled or the tunnel fails. onShutdown, if set, is
+// called on the way out (e.g. to close a listener-backed origin).
+func (t *Tunnel) serve(ctx context.Context, tun libtunnel.TunnelV1, describe string, onShutdown func()) error {
 	slog.Info("opening tunnel", "target", describe)
 	publicURL := tun.URL()
 	if publicURL == nil {
+		if onShutdown != nil {
+			onShutdown()
+		}
 		if err := tun.Err(); err != nil {
 			return fmt.Errorf("opening tunnel: %w", err)
 		}
@@ -116,56 +184,16 @@ func (t *Tunnel) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		// Deliberate shutdown: closing the listener retires the edge.
-		_ = server.Close()
+		if onShutdown != nil {
+			onShutdown()
+		}
 		return nil
 	case <-tun.Done():
-		_ = server.Close()
+		if onShutdown != nil {
+			onShutdown()
+		}
 		return tun.Err()
 	}
-}
-
-// reverseProxy builds the raw forwarder to the resolved target and a
-// human-readable description of it. The transport trusts only the cluster CA
-// and carries no client credentials — callers authenticate themselves.
-func (t *Tunnel) reverseProxy() (*httputil.ReverseProxy, string, error) {
-	target, err := url.Parse(t.restConfig.Host)
-	if err != nil {
-		return nil, "", fmt.Errorf("parsing API server URL %q: %w", t.restConfig.Host, err)
-	}
-
-	transport, err := t.transport()
-	if err != nil {
-		return nil, "", err
-	}
-
-	name, isService := parseTarget(t.target)
-	var pathPrefix, describe string
-	if isService {
-		pathPrefix = fmt.Sprintf("/api/v1/namespaces/%s/services/%s/proxy", t.namespace, name)
-		describe = fmt.Sprintf("service %s/%s", t.namespace, name)
-	} else {
-		describe = fmt.Sprintf("apiserver %s", target.Host)
-	}
-
-	proxy := &httputil.ReverseProxy{
-		Transport: transport,
-		// Stream responses as they arrive so watch/exec/log endpoints work.
-		FlushInterval: -1,
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.Host = target.Host
-			if pathPrefix != "" {
-				req.URL.Path = singleJoiningSlash(pathPrefix, req.URL.Path)
-			}
-		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			slog.Debug("tunnel upstream error", "err", err)
-			w.WriteHeader(http.StatusBadGateway)
-		},
-	}
-	return proxy, describe, nil
 }
 
 // transport dials the API server over TLS trusting the cluster CA, with no

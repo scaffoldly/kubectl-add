@@ -154,11 +154,12 @@ kubectl add tunnel kubernetes            # the API server (explicit)
 kubectl add tunnel svc/my-app -n demo    # a Service, via the API server proxy
 ```
 
-The tunnel forwards **raw**: it re-originates TLS to the API server trusting
-only the cluster CA and injects **no credentials of its own**. Callers hitting
-the public URL authenticate exactly as they would against the API server
-directly — a Service target routes through the `services/proxy` subresource, so
-the caller needs the matching RBAC. Nothing is granted by opening the tunnel.
+The tunnel forwards **raw** and injects **no credentials of its own** — callers
+hitting the public URL authenticate exactly as they would against the API
+server directly. The default (API server) target points the tunnel straight at
+your current context's cluster URL. A Service target routes through the API
+server's `services/proxy` subresource, so the caller needs the matching RBAC.
+Nothing is granted by opening the tunnel.
 
 > ⚠️ This publishes an API server endpoint to the internet for the tunnel's
 > lifetime. Anyone with the URL can reach it (and still has to authenticate).

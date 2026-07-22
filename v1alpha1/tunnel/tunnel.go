@@ -96,8 +96,8 @@ func (t *Tunnel) Run(ctx context.Context) error {
 // verification — the API server's private-CA cert would otherwise fail — and
 // forwarding requests untouched, so callers still authenticate themselves.
 //
-// A URL origin has no tunnel-owned listener and no Close handle: the tunnel
-// runs until the process exits (the foreground command's SIGINT) or it fails.
+// A URL origin has no tunnel-owned listener, so canceling the context is the
+// teardown handle: WithContext propagates cancellation into libtunnel's engine.
 func (t *Tunnel) runAPIServer(ctx context.Context) error {
 	host, err := url.Parse(t.restConfig.Host)
 	if err != nil {

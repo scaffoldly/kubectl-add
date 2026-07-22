@@ -2,6 +2,11 @@ BINARY := kubectl-add
 INSTALL_DIR := $(HOME)/.local/bin
 CMD := ./cmd/kubectl-add
 
+# The binary is pure Go and ships cgo-off; pin it for every target so vet/test
+# match the release build and never drag in runtime/cgo (whose arm64 assembly
+# fails to build under the Windows/arm CI toolchain).
+export CGO_ENABLED := 0
+
 # VERSION identifies the build; overridable, e.g. make build VERSION=v0.3.0.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 VERSION_PKG := github.com/scaffoldly/kubectl-add/v1alpha1/version

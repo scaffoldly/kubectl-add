@@ -23,6 +23,7 @@ import (
 	resolvehttp "github.com/scaffoldly/kubectl-add/v1alpha1/resolve/http"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/image"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/selfupdate"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/version"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -166,6 +167,70 @@ func (a *Add) IntoCobra() *cobra.Command {
 	// Bind matches the virtual root on cmd.Use; set the usage-line resource
 	// hint afterwards so it does not interfere with that match.
 	cmd.Use = "kubectl-add <resource>"
+
+	// Subcommands are added after Bind so the root keeps its own RunE (Bind
+	// wires unknownSubcommandAction when subcommands already exist at bind
+	// time). cobra dispatches a matching subcommand and otherwise falls back
+	// to the root's <resource> action.
+	cmd.AddCommand(newTunnelCommand(a.ConfigFlags))
+	return cmd
+}
+
+// tunnelCLI is the reeflective/flags surface for `kubectl add tunnel`.
+type tunnelCLI struct {
+	// Args holds the sole positional: the tunnel target. Optional — an absent
+	// target means the API server.
+	Args struct {
+		Target string `desc:"[svc/]name to tunnel to; defaults to the API server (the kubernetes service)"`
+	} `positional-args:"yes"`
+
+	configFlags *genericclioptions.ConfigFlags
+	ctx         context.Context
+}
+
+// Execute opens the tunnel, resolving the connection and namespace from the
+// inherited kubectl flags.
+func (t *tunnelCLI) Execute(extra []string) error {
+	if len(extra) > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(extra, " "))
+	}
+	config, err := t.configFlags.ToRESTConfig()
+	if err != nil {
+		return fmt.Errorf("building REST config: %w", err)
+	}
+	namespace, _, err := t.configFlags.ToRawKubeConfigLoader().Namespace()
+	if err != nil {
+		return fmt.Errorf("resolving namespace: %w", err)
+	}
+	return tunnel.New().
+		WithContext(t.ctx).
+		WithRESTConfig(config).
+		WithNamespace(namespace).
+		WithTarget(t.Args.Target).
+		Run(t.ctx)
+}
+
+// newTunnelCommand builds the `tunnel` subcommand, binding its positional with
+// reeflective/flags. The kubectl connection flags are inherited from the root's
+// persistent flag set.
+func newTunnelCommand(configFlags *genericclioptions.ConfigFlags) *cobra.Command {
+	t := &tunnelCLI{configFlags: configFlags, ctx: context.Background()}
+	cmd := &cobra.Command{
+		Use:          "tunnel",
+		Short:        "Tunnel to the API server (or a service) over a public URL",
+		Long:         "Expose the Kubernetes API server, or a Service reached through it, to the public internet through a Cloudflare quick tunnel. The tunnel forwards raw: callers authenticate themselves, no credentials are injected. Runs until interrupted.",
+		SilenceUsage: true,
+	}
+	if err := flags.Bind(cmd, t); err != nil {
+		panic(fmt.Sprintf("binding tunnel flags: %v", err))
+	}
+	cmd.Use = "tunnel [svc/]<name>"
+	// reeflective's runner does not receive the *cobra.Command; capture the
+	// ExecuteContext-threaded context after Bind (which leaves PreRunE alone).
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		t.ctx = cmd.Context()
+		return nil
+	}
 	return cmd
 }
 

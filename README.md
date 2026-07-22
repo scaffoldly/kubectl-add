@@ -28,6 +28,7 @@ your RBAC and no kubeconfig is copied in.
 - ⎈ **Helm, no tiller, no fuss** — renders charts client-side; installs from loose files, an HTTP chart repository, or a git repo.
 - 📌 **Pin what you want** — `?chart=` and `?version=` select straight from a repository index.
 - 🗑️ **Reversible** — `--remove` deletes exactly what you added.
+- 🌐 **Public tunnel** — `kubectl add tunnel` exposes the API server (or a service) over a Cloudflare quick tunnel, raw-forwarded so callers still authenticate.
 - 🪶 **Feels native** — one command, standard kubectl flags (`--namespace`, `-v`, kubeconfig).
 
 ## Getting Started
@@ -139,6 +140,29 @@ kubectl add https://kubernetes.github.io/ingress-nginx --no-edit  # installs wit
 ```
 
 The edit is skipped automatically when stdin is not a terminal (scripts, CI).
+
+### Tunnel
+
+Expose the API server — or a Service reached through it — to the public
+internet over a [Cloudflare quick tunnel](https://github.com/cnuss/libtunnel),
+driven in-process (no `cloudflared` binary). The public URL is printed and the
+tunnel runs until you interrupt it:
+
+```sh
+kubectl add tunnel                       # the API server (default)
+kubectl add tunnel kubernetes            # the API server (explicit)
+kubectl add tunnel svc/my-app -n demo    # a Service, via the API server proxy
+```
+
+The tunnel forwards **raw**: it re-originates TLS to the API server trusting
+only the cluster CA and injects **no credentials of its own**. Callers hitting
+the public URL authenticate exactly as they would against the API server
+directly — a Service target routes through the `services/proxy` subresource, so
+the caller needs the matching RBAC. Nothing is granted by opening the tunnel.
+
+> ⚠️ This publishes an API server endpoint to the internet for the tunnel's
+> lifetime. Anyone with the URL can reach it (and still has to authenticate).
+> Use it for short-lived demos and debugging, not as a standing ingress.
 
 ## Use as a library
 

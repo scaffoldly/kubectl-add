@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/lmittmann/tint"
+	"github.com/reeflective/flags"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/helm"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/httpclient"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/kustomize"
@@ -92,69 +93,102 @@ func New() *Add {
 	}
 }
 
-// IntoCobra builds the root command: kubectl add <resource>.
+// cli is the command-line surface. reeflective/flags binds the positional
+// <resource> and the add-specific flags onto these fields via struct tags, and
+// Execute resolves them onto the wrapped Add builder and runs it. The Add
+// builder remains the library entry point; this type is only the CLI glue.
+type cli struct {
+	Debug       bool   `desc:"enable debug output"                                                          long:"debug"`
+	Verbose     bool   `desc:"enable verbose output"                                                        long:"verbose"`
+	Remove      bool   `desc:"remove the resource (kubectl delete) instead of adding it"                     long:"remove"`
+	NoEdit      bool   `desc:"skip the interactive edit of an install's editable inputs (e.g. helm values)" long:"no-edit"`
+	Update      bool   `desc:"check for a newer release and update this binary, then exit"                   long:"update"`
+	GitHubToken string `desc:"GitHub token for the self-update check (defaults to $GITHUB_TOKEN)"            long:"github-token"`
+
+	// Args holds the sole positional: the resource to add. It is optional at
+	// the parser level so --update can run with none; Execute enforces that a
+	// normal run supplies exactly one.
+	Args struct {
+		Resource string `desc:"a YAML URL, kustomization, helm chart, chart repo, or git repo to add"`
+	} `positional-args:"yes"`
+
+	add *Add
+	ctx context.Context
+}
+
+// Execute is reeflective/flags' run entry point. extra holds any positional
+// words left unbound after the single <resource> slot — always an error here.
+func (c *cli) Execute(extra []string) error {
+	if len(extra) > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(extra, " "))
+	}
+	if !c.Update && c.Args.Resource == "" {
+		return fmt.Errorf("requires a <resource> argument (or --update)")
+	}
+
+	a := c.add.
+		WithContext(c.ctx).
+		WithDebug(c.Debug).
+		WithVerbose(c.Verbose).
+		WithRemove(c.Remove).
+		WithNoEdit(c.NoEdit).
+		WithUpdate(c.Update).
+		WithGitHubToken(c.GitHubToken).
+		resolveConnection()
+	if c.Args.Resource != "" {
+		a.WithResource(c.Args.Resource)
+	}
+	return a.Run()
+}
+
+// IntoCobra builds the root command (kubectl add <resource>), binding the CLI
+// surface with reeflective/flags.
 func (a *Add) IntoCobra() *cobra.Command {
-	return &cobra.Command{
-		Use:   "kubectl-add <resource>",
+	c := &cli{add: a, ctx: context.Background()}
+	cmd := &cobra.Command{
+		Use:   "kubectl-add",
 		Short: "Add a resource to the cluster",
 		Long:  "Add a resource to the cluster. Currently accepts a URL to a YAML manifest, which is applied with kubectl apply.",
 		Annotations: map[string]string{
 			cobra.CommandDisplayNameAnnotation: "kubectl add",
 		},
 		SilenceUsage: true,
-		// One resource, except with --update (which takes none and just
-		// self-updates).
-		Args: func(cmd *cobra.Command, args []string) error {
-			if update, _ := cmd.Flags().GetBool("update"); update {
-				return cobra.NoArgs(cmd, args)
-			}
-			return cobra.ExactArgs(1)(cmd, args)
-		},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.WithCobra(cmd, args).Run()
-		},
 	}
+	// reeflective's runner (Execute) does not receive the *cobra.Command, so
+	// capture the context threaded by ExecuteContext here for Execute to use.
+	cmd.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		c.ctx = cmd.Context()
+		return nil
+	}
+	if err := flags.Bind(cmd, c); err != nil {
+		panic(fmt.Sprintf("binding command flags: %v", err))
+	}
+	// Bind matches the virtual root on cmd.Use; set the usage-line resource
+	// hint afterwards so it does not interfere with that match.
+	cmd.Use = "kubectl-add <resource>"
+	return cmd
 }
 
-// WithCobra applies parsed CLI state: the positional resource, plus the REST
-// config and namespace resolved from ConfigFlags. Runs at execute time, so
-// flag values are populated.
-func (a *Add) WithCobra(cmd *cobra.Command, args []string) *Add {
-	a.WithContext(cmd.Context())
-	debug, _ := cmd.Flags().GetBool("debug")
-	a.WithDebug(debug)
-	verbose, _ := cmd.Flags().GetBool("verbose")
-	a.WithVerbose(verbose)
-	remove, _ := cmd.Flags().GetBool("remove")
-	a.WithRemove(remove)
-	noEdit, _ := cmd.Flags().GetBool("no-edit")
-	a.WithNoEdit(noEdit)
-	if update, _ := cmd.Flags().GetBool("update"); update {
-		a.WithUpdate(true)
+// resolveConnection derives the REST config and namespace from ConfigFlags,
+// recording the first failure in a.err for Run to surface. A no-op when no
+// ConfigFlags were supplied (Run then infers the connection from kubeconfig).
+func (a *Add) resolveConnection() *Add {
+	if a.ConfigFlags == nil {
+		return a
 	}
-	if token, _ := cmd.Flags().GetString("github-token"); token != "" {
-		a.WithGitHubToken(token)
+	config, err := a.ConfigFlags.ToRESTConfig()
+	if err != nil {
+		a.err = fmt.Errorf("building REST config: %w", err)
+		return a
 	}
-	if len(args) > 0 {
-		a.WithResource(args[0])
-	}
+	a.WithRESTConfig(config)
 
-	if a.ConfigFlags != nil {
-		config, err := a.ConfigFlags.ToRESTConfig()
-		if err != nil {
-			a.err = fmt.Errorf("building REST config: %w", err)
-			return a
-		}
-		a.WithRESTConfig(config)
-
-		namespace, _, err := a.ConfigFlags.ToRawKubeConfigLoader().Namespace()
-		if err != nil {
-			a.err = fmt.Errorf("resolving namespace: %w", err)
-			return a
-		}
-		a.WithNamespace(namespace)
+	namespace, _, err := a.ConfigFlags.ToRawKubeConfigLoader().Namespace()
+	if err != nil {
+		a.err = fmt.Errorf("resolving namespace: %w", err)
+		return a
 	}
-
+	a.WithNamespace(namespace)
 	return a
 }
 

@@ -16,18 +16,14 @@ import (
 var configFlags = genericclioptions.NewConfigFlags(true)
 
 func main() {
+	// IntoCobra binds the add-specific flags and the positional <resource> via
+	// reeflective/flags; the kubectl connection flags are added on top here.
 	rootCmd := add.New().WithConfigFlags(configFlags).IntoCobra()
 	rootCmd.Version = version.String()
-	rootCmd.PersistentFlags().Bool("debug", false, "enable debug output")
-	rootCmd.PersistentFlags().Bool("verbose", false, "enable verbose output")
-	rootCmd.Flags().Bool("remove", false, "remove the resource (kubectl delete) instead of adding it")
-	rootCmd.Flags().Bool("no-edit", false, "skip the interactive edit of an install's editable inputs (e.g. helm values)")
-	rootCmd.Flags().Bool("update", false, "check for a newer release and update this binary, then exit")
-	rootCmd.Flags().String("github-token", "", "GitHub token for the self-update check (defaults to $GITHUB_TOKEN)")
 	configFlags.AddFlags(rootCmd.PersistentFlags())
 
-	// Cancel the run on interrupt/termination; WithCobra threads this into
-	// the builder via cmd.Context().
+	// Cancel the run on interrupt/termination; a PersistentPreRunE threads this
+	// context into the builder via cmd.Context().
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

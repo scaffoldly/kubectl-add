@@ -193,11 +193,13 @@ func (a *Add) IntoCobra() *cobra.Command {
 type tunnelCLI struct {
 	Debug   bool `desc:"emit debug logs, including the underlying tunnel's" long:"debug"`
 	Verbose bool `desc:"emit the tunnel's progress logs"                    long:"verbose"`
+	Install bool `desc:"install a persistent in-cluster tunnel (a libtunnel Deployment) instead of a local one" long:"install"`
+	Remove  bool `desc:"remove a previously installed in-cluster tunnel"                                        long:"remove"`
 
 	// Args holds the sole positional: the tunnel target. Optional — an absent
 	// target means the API server.
 	Args struct {
-		Target string `desc:"[svc/]name to tunnel to; defaults to the API server (the kubernetes service)"`
+		Target string `desc:"[svc/]name[:port] to tunnel to; defaults to the API server (the kubernetes service)"`
 	} `positional-args:"yes"`
 
 	configFlags *genericclioptions.ConfigFlags
@@ -226,6 +228,8 @@ func (t *tunnelCLI) Execute(extra []string) error {
 		WithTarget(t.Args.Target).
 		WithDebug(t.Debug).
 		WithVerbose(t.Verbose).
+		WithInstall(t.Install).
+		WithRemove(t.Remove).
 		Run(t.ctx)
 }
 

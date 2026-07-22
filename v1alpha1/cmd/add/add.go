@@ -157,8 +157,21 @@ func (a *Add) IntoCobra() *cobra.Command {
 	}
 	// reeflective's runner (Execute) does not receive the *cobra.Command, so
 	// capture the context threaded by ExecuteContext here for Execute to use.
+	// This is persistent, so it also runs for subcommands (e.g. tunnel).
 	cmd.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		c.ctx = cmd.Context()
+
+		// Keep the binary current before any command runs — the root's
+		// <resource> action and every subcommand alike. Throttled to once per
+		// day and fail-open; a swapped binary takes effect next run. Skipped
+		// for the forced --update path, which Run handles itself.
+		if c.add.AutoUpdate && !c.Update {
+			token := c.GitHubToken
+			if token == "" {
+				token = os.Getenv("GITHUB_TOKEN")
+			}
+			selfupdate.AutoUpdate(cmd.Context(), version.String(), token, httpclient.Default())
+		}
 		return nil
 	}
 	if err := flags.Bind(cmd, c); err != nil {
@@ -437,14 +450,10 @@ func (a *Add) Run() error {
 	}
 
 	// --update: self-update on demand, then exit without running a command.
+	// The throttled auto-update runs from the command's PersistentPreRunE, so
+	// it covers every subcommand, not just this <resource> path.
 	if a.Update {
 		return selfupdate.Update(ctx, version.String(), a.githubToken(), httpclient.Default())
-	}
-
-	// Keep the binary current before doing the requested work. Throttled to
-	// once per day and fail-open — a swapped binary takes effect next run.
-	if a.AutoUpdate {
-		selfupdate.AutoUpdate(ctx, version.String(), a.githubToken(), httpclient.Default())
 	}
 
 	manifest := a.URL(ctx)

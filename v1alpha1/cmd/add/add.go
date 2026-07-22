@@ -178,6 +178,9 @@ func (a *Add) IntoCobra() *cobra.Command {
 
 // tunnelCLI is the reeflective/flags surface for `kubectl add tunnel`.
 type tunnelCLI struct {
+	Debug   bool `desc:"emit debug logs, including the underlying tunnel's" long:"debug"`
+	Verbose bool `desc:"emit the tunnel's progress logs"                    long:"verbose"`
+
 	// Args holds the sole positional: the tunnel target. Optional — an absent
 	// target means the API server.
 	Args struct {
@@ -189,7 +192,8 @@ type tunnelCLI struct {
 }
 
 // Execute opens the tunnel, resolving the connection and namespace from the
-// inherited kubectl flags.
+// inherited kubectl flags. The tunnel is quiet by default: only the public URL
+// is printed. --verbose surfaces its progress, --debug the underlying tunnel's.
 func (t *tunnelCLI) Execute(extra []string) error {
 	if len(extra) > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(extra, " "))
@@ -207,6 +211,8 @@ func (t *tunnelCLI) Execute(extra []string) error {
 		WithRESTConfig(config).
 		WithNamespace(namespace).
 		WithTarget(t.Args.Target).
+		WithDebug(t.Debug).
+		WithVerbose(t.Verbose).
 		Run(t.ctx)
 }
 
@@ -297,6 +303,19 @@ func (h *logHandler) Handle(ctx context.Context, record slog.Record) error {
 	return h.Handler.Handle(ctx, record)
 }
 
+// configureLogging installs the process-wide slog handler at the given level:
+// clean INFO lines, full structured format for everything else. Records below
+// the level — including the underlying tunnel's — are dropped. Output is
+// colored when stderr is a terminal and NO_COLOR is unset.
+func configureLogging(level slog.Level) {
+	color := term.IsTerminal(int(os.Stderr.Fd())) && os.Getenv("NO_COLOR") == ""
+	slog.SetDefault(slog.New(&logHandler{
+		Handler: tint.NewTextHandler(os.Stderr, &tint.Options{Level: level, NoColor: !color}),
+		out:     os.Stderr,
+		color:   color,
+	}))
+}
+
 // WithDebug configures the process-wide log level: debug logs are emitted
 // to stderr only when enabled. Output is colored when stderr is a terminal
 // and NO_COLOR is unset.
@@ -306,12 +325,7 @@ func (a *Add) WithDebug(debug bool) *Add {
 	if debug {
 		level = slog.LevelDebug
 	}
-	color := term.IsTerminal(int(os.Stderr.Fd())) && os.Getenv("NO_COLOR") == ""
-	slog.SetDefault(slog.New(&logHandler{
-		Handler: tint.NewTextHandler(os.Stderr, &tint.Options{Level: level, NoColor: !color}),
-		out:     os.Stderr,
-		color:   color,
-	}))
+	configureLogging(level)
 	return a
 }
 

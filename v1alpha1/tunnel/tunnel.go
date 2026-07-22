@@ -36,7 +36,10 @@ type Tunnel struct {
 	namespace  string
 	target     string
 	ctx        context.Context
+	debug      bool
+	verbose    bool
 
+	log *slog.Logger
 	err error
 }
 
@@ -65,6 +68,33 @@ func (t *Tunnel) WithTarget(target string) *Tunnel {
 	return t
 }
 
+// WithDebug emits the underlying tunnel's own logs (and the tunnel's progress).
+func (t *Tunnel) WithDebug(debug bool) *Tunnel {
+	t.debug = debug
+	return t
+}
+
+// WithVerbose emits the tunnel's progress logs.
+func (t *Tunnel) WithVerbose(verbose bool) *Tunnel {
+	t.verbose = verbose
+	return t
+}
+
+// logger builds the tunnel-scoped logger. Quiet by default (WARN — only the
+// public URL, printed to stdout, is visible); --verbose surfaces progress at
+// INFO, --debug the underlying tunnel's logs at DEBUG. Scoped to this tunnel
+// rather than mutating slog.Default, so a library caller's logging is untouched.
+func (t *Tunnel) logger() *slog.Logger {
+	level := slog.LevelWarn
+	if t.verbose {
+		level = slog.LevelInfo
+	}
+	if t.debug {
+		level = slog.LevelDebug
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+}
+
 // WithContext threads cancellation into Run; closing it (e.g. on SIGINT) tears
 // the tunnel down. Defaults to context.Background.
 func (t *Tunnel) WithContext(ctx context.Context) *Tunnel {
@@ -84,6 +114,7 @@ func (t *Tunnel) Run(ctx context.Context) error {
 	if t.restConfig == nil {
 		return fmt.Errorf("no REST config: WithRESTConfig is required")
 	}
+	t.log = t.logger()
 
 	if name, isService := parseTarget(t.target); isService {
 		return t.runService(ctx, name)
@@ -107,7 +138,7 @@ func (t *Tunnel) runAPIServer(ctx context.Context) error {
 	origin := &url.URL{Scheme: host.Scheme, Host: host.Host}
 
 	tun := libtunnel.New(libtunnel.Cloudflare()).
-		WithLogger(slog.Default()).
+		WithLogger(t.log).
 		WithContext(ctx).
 		WithLocalURL(origin)
 
@@ -142,13 +173,13 @@ func (t *Tunnel) runService(ctx context.Context, name string) error {
 			req.URL.Path = singleJoiningSlash(pathPrefix, req.URL.Path)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			slog.Debug("tunnel upstream error", "err", err)
+			t.log.Debug("tunnel upstream error", "err", err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
 
 	tun := libtunnel.New(libtunnel.Cloudflare()).
-		WithLogger(slog.Default()).
+		WithLogger(t.log).
 		WithContext(ctx)
 
 	lis := tun.Listener()
@@ -167,7 +198,7 @@ func (t *Tunnel) runService(ctx context.Context, name string) error {
 // until the context is canceled or the tunnel fails. onShutdown, if set, is
 // called on the way out (e.g. to close a listener-backed origin).
 func (t *Tunnel) serve(ctx context.Context, tun libtunnel.TunnelV1, describe string, onShutdown func()) error {
-	slog.Info("opening tunnel", "target", describe)
+	t.log.Info("opening tunnel", "target", describe)
 	publicURL := tun.URL()
 	if publicURL == nil {
 		if onShutdown != nil {
@@ -179,7 +210,7 @@ func (t *Tunnel) serve(ctx context.Context, tun libtunnel.TunnelV1, describe str
 		return ctx.Err()
 	}
 
-	slog.Info("tunnel ready", "target", describe, "url", publicURL)
+	t.log.Info("tunnel ready", "target", describe, "url", publicURL)
 	fmt.Fprintln(os.Stdout, publicURL)
 
 	select {

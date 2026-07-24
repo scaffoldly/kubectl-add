@@ -6,22 +6,25 @@ func TestParseTarget(t *testing.T) {
 	cases := []struct {
 		in        string
 		wantName  string
+		wantPort  string
 		wantIsSvc bool
 	}{
-		{"", "", false},
-		{"kubernetes", "", false},
-		{"svc/kubernetes", "", false},
-		{"service/kubernetes", "", false},
-		{"  kubernetes  ", "", false},
-		{"foo", "foo", true},
-		{"svc/foo", "foo", true},
-		{"service/foo", "foo", true},
-		{"services/foo", "foo", true},
+		{"", "", "", false},
+		{"kubernetes", "", "", false},
+		{"svc/kubernetes", "", "", false},
+		{"service/kubernetes", "", "", false},
+		{"  kubernetes  ", "", "", false},
+		{"foo", "foo", "", true},
+		{"svc/foo", "foo", "", true},
+		{"service/foo", "foo", "", true},
+		{"services/foo", "foo", "", true},
+		{"svc/foo:8080", "foo", "8080", true},
+		{"foo:80", "foo", "80", true},
 	}
 	for _, c := range cases {
-		name, isSvc := parseTarget(c.in)
-		if name != c.wantName || isSvc != c.wantIsSvc {
-			t.Errorf("parseTarget(%q) = (%q, %v), want (%q, %v)", c.in, name, isSvc, c.wantName, c.wantIsSvc)
+		name, port, isSvc := parseTarget(c.in)
+		if name != c.wantName || port != c.wantPort || isSvc != c.wantIsSvc {
+			t.Errorf("parseTarget(%q) = (%q, %q, %v), want (%q, %q, %v)", c.in, name, port, isSvc, c.wantName, c.wantPort, c.wantIsSvc)
 		}
 	}
 }

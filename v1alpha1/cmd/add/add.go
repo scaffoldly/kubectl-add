@@ -24,12 +24,15 @@ import (
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/image"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/selfupdate"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/auth"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/version"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // DefaultNamespace is used when neither -n nor the kubeconfig context set one.
@@ -193,11 +196,16 @@ func (a *Add) IntoCobra() *cobra.Command {
 type tunnelCLI struct {
 	Debug   bool `desc:"emit debug logs, including the underlying tunnel's" long:"debug"`
 	Verbose bool `desc:"emit the tunnel's progress logs"                    long:"verbose"`
+	Install bool `desc:"install a persistent in-cluster tunnel (a libtunnel Deployment) instead of a local one" long:"install"`
+	Remove  bool `desc:"remove a previously installed in-cluster tunnel"                                        long:"remove"`
+	// UpdateContext defaults to true (set in newTunnelCommand);
+	// --update-context=false opts out.
+	UpdateContext bool `desc:"add a kubeconfig context pointing at the tunnel's public URL" long:"update-context"`
 
 	// Args holds the sole positional: the tunnel target. Optional — an absent
 	// target means the API server.
 	Args struct {
-		Target string `desc:"[svc/]name to tunnel to; defaults to the API server (the kubernetes service)"`
+		Target string `desc:"[svc/]name[:port] to tunnel to; defaults to the API server (the kubernetes service)"`
 	} `positional-args:"yes"`
 
 	configFlags *genericclioptions.ConfigFlags
@@ -219,25 +227,137 @@ func (t *tunnelCLI) Execute(extra []string) error {
 	if err != nil {
 		return fmt.Errorf("resolving namespace: %w", err)
 	}
-	return tunnel.New().
+	tun := tunnel.New().
 		WithContext(t.ctx).
 		WithRESTConfig(config).
 		WithNamespace(namespace).
 		WithTarget(t.Args.Target).
 		WithDebug(t.Debug).
 		WithVerbose(t.Verbose).
-		Run(t.ctx)
+		WithInstall(t.Install).
+		WithRemove(t.Remove)
+	// --remove tears a tunnel down; there is no URL to point a context at.
+	if t.UpdateContext && !t.Remove {
+		tun.WithOnPublicURL(t.writeTunnelContext)
+	}
+	return tun.Run(t.ctx)
+}
+
+// writeTunnelContext adds a kubeconfig context that points at the tunnel's
+// public URL, copying the current context's user (so the caller still
+// authenticates) but dropping the cluster CA — the URL is terminated by
+// Cloudflare's own publicly-trusted certificate, validated against the system
+// roots. The current context is left unchanged.
+// clientCertOnly reports whether a kubeconfig user authenticates solely with a
+// client certificate — an mTLS credential that terminates at the tunnel edge
+// and never reaches the API server. Token, exec, and auth-provider users carry
+// an HTTP-header credential that traverses the tunnel, so they need no minting.
+func clientCertOnly(u *clientcmdapi.AuthInfo) bool {
+	if u == nil {
+		return false
+	}
+	hasCert := u.ClientCertificate != "" || len(u.ClientCertificateData) > 0
+	hasHeaderCred := u.Token != "" || u.TokenFile != "" || u.Exec != nil || u.AuthProvider != nil
+	return hasCert && !hasHeaderCred
+}
+
+func (t *tunnelCLI) writeTunnelContext(ctx context.Context, publicURL string) (func(), error) {
+	loader := t.configFlags.ToRawKubeConfigLoader()
+	raw, err := loader.RawConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading kubeconfig: %w", err)
+	}
+
+	base := raw.CurrentContext
+	if t.configFlags.Context != nil && *t.configFlags.Context != "" {
+		base = *t.configFlags.Context
+	}
+	cur, ok := raw.Contexts[base]
+	if !ok {
+		return nil, fmt.Errorf("current context %q not found in kubeconfig", base)
+	}
+
+	name := base + "-tunnel"
+
+	// A client-certificate identity can't traverse the tunnel (mTLS terminates
+	// at the edge). Mint a bearer token that impersonates the caller and give
+	// the tunnel context its own user; otherwise reference the existing user,
+	// whose header-based credential forwards fine.
+	authInfoName := cur.AuthInfo
+	var credCleanup func()
+	if clientCertOnly(raw.AuthInfos[cur.AuthInfo]) {
+		config, err := t.configFlags.ToRESTConfig()
+		if err != nil {
+			return nil, fmt.Errorf("building REST config: %w", err)
+		}
+		ns, _, nerr := t.configFlags.ToRawKubeConfigLoader().Namespace()
+		if nerr != nil || ns == "" {
+			ns = DefaultNamespace
+		}
+		ai, cleanup, err := auth.MintImpersonation(ctx, config, ns, publicURL)
+		if err != nil {
+			return nil, err
+		}
+		raw.AuthInfos[name] = ai
+		authInfoName = name
+		credCleanup = cleanup
+	}
+
+	prevContext := raw.CurrentContext
+	raw.Clusters[name] = &clientcmdapi.Cluster{Server: publicURL} // no CA: system roots
+	raw.Contexts[name] = &clientcmdapi.Context{
+		Cluster:   name,
+		AuthInfo:  authInfoName,
+		Namespace: cur.Namespace,
+	}
+	raw.CurrentContext = name
+	if err := clientcmd.ModifyConfig(loader.ConfigAccess(), raw, true); err != nil {
+		if credCleanup != nil {
+			credCleanup()
+		}
+		return nil, fmt.Errorf("writing kubeconfig: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "updated kubeconfig: switched to context %q\n", name)
+
+	// Reload before editing so a concurrent kubeconfig change is not clobbered.
+	cleanup := func() {
+		if credCleanup != nil {
+			credCleanup()
+		}
+		fresh, err := loader.RawConfig()
+		if err != nil {
+			return
+		}
+		delete(fresh.Clusters, name)
+		delete(fresh.Contexts, name)
+		if authInfoName == name {
+			delete(fresh.AuthInfos, name)
+		}
+		// Restore the previous current-context if ours is still selected.
+		if fresh.CurrentContext == name {
+			fresh.CurrentContext = prevContext
+		}
+		if err := clientcmd.ModifyConfig(loader.ConfigAccess(), fresh, true); err != nil {
+			fmt.Fprintf(os.Stderr, "could not remove kubeconfig context %q: %v\n", name, err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "removed kubeconfig context %q, restored %q\n", name, prevContext)
+	}
+	return cleanup, nil
 }
 
 // newTunnelCommand builds the `tunnel` subcommand, binding its positional with
 // reeflective/flags. The kubectl connection flags are inherited from the root's
 // persistent flag set.
 func newTunnelCommand(configFlags *genericclioptions.ConfigFlags) *cobra.Command {
-	t := &tunnelCLI{configFlags: configFlags, ctx: context.Background()}
+	// UpdateContext defaults on; reeflective takes the field's current value as
+	// the flag default, so --update-context=false is the opt-out.
+	t := &tunnelCLI{configFlags: configFlags, ctx: context.Background(), UpdateContext: true}
 	cmd := &cobra.Command{
-		Use:          "tunnel",
-		Short:        "Tunnel to the API server (or a service) over a public URL",
-		Long:         "Expose the Kubernetes API server, or a Service reached through it, to the public internet through a Cloudflare quick tunnel. The tunnel forwards raw: callers authenticate themselves, no credentials are injected. Runs until interrupted.",
+		Use:   "tunnel",
+		Short: "[ALPHA] Tunnel to the API server (or a service) over a public URL",
+		Long: "[ALPHA] This is an alpha feature; its flags and behavior may change.\n\n" +
+			"Expose the Kubernetes API server, or a Service reached through it, to the public internet through a Cloudflare quick tunnel. The tunnel forwards raw: callers authenticate themselves, no credentials are injected. Runs until interrupted.",
 		SilenceUsage: true,
 	}
 	if err := flags.Bind(cmd, t); err != nil {

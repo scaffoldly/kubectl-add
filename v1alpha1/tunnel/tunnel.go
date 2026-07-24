@@ -25,6 +25,8 @@ import (
 	"strings"
 
 	"github.com/cnuss/libtunnel"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/apiserver"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/deployment"
 	"k8s.io/client-go/rest"
 )
 
@@ -38,6 +40,9 @@ type Tunnel struct {
 	ctx        context.Context
 	debug      bool
 	verbose    bool
+	install    bool
+	remove     bool
+	onURL      func(ctx context.Context, publicURL string) (cleanup func(), err error)
 
 	log *slog.Logger
 	err error
@@ -95,6 +100,46 @@ func (t *Tunnel) logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
+// WithInstall runs a persistent in-cluster tunnel (a libtunnel Deployment)
+// instead of a local one, and prints its public URL.
+func (t *Tunnel) WithInstall(install bool) *Tunnel {
+	t.install = install
+	return t
+}
+
+// WithRemove deletes a previously installed in-cluster tunnel.
+func (t *Tunnel) WithRemove(remove bool) *Tunnel {
+	t.remove = remove
+	return t
+}
+
+// WithOnPublicURL registers a callback invoked once the public URL is known
+// (both the local and installed tunnels), e.g. to write a kubeconfig context.
+// It may return a cleanup func, which the local tunnel runs on teardown (its
+// public URL dies with the process); the installed tunnel ignores it, since it
+// outlives the command. A callback error is logged and does not fail the tunnel.
+func (t *Tunnel) WithOnPublicURL(fn func(ctx context.Context, publicURL string) (cleanup func(), err error)) *Tunnel {
+	t.onURL = fn
+	return t
+}
+
+// announce reports the ready tunnel: it runs the onURL hook (e.g. writing a
+// kubeconfig context, which prints its own confirmation) or, when no hook is
+// set, prints where the public URL forwards to. It returns the hook's cleanup
+// (nil if none), for the caller to run on teardown.
+func (t *Tunnel) announce(ctx context.Context, describe, targetURL, publicURL string) (cleanup func()) {
+	t.log.Info("tunnel ready", "target", describe, "url", publicURL)
+	if t.onURL != nil {
+		clean, err := t.onURL(ctx, publicURL)
+		if err != nil {
+			t.log.Warn("could not update kubeconfig context", "err", err)
+		}
+		return clean
+	}
+	fmt.Fprintf(os.Stderr, "%s -> %s\n", publicURL, targetURL)
+	return nil
+}
+
 // WithContext threads cancellation into Run; closing it (e.g. on SIGINT) tears
 // the tunnel down. Defaults to context.Background.
 func (t *Tunnel) WithContext(ctx context.Context) *Tunnel {
@@ -114,12 +159,39 @@ func (t *Tunnel) Run(ctx context.Context) error {
 	if t.restConfig == nil {
 		return fmt.Errorf("no REST config: WithRESTConfig is required")
 	}
+	if t.install && t.remove {
+		return fmt.Errorf("--install and --remove are mutually exclusive")
+	}
 	t.log = t.logger()
 
-	if name, isService := parseTarget(t.target); isService {
-		return t.runService(ctx, name)
+	if t.remove {
+		return t.runRemove(ctx)
+	}
+	if t.install {
+		return t.runInstall(ctx)
+	}
+
+	if name, port, isService := parseTarget(t.target); isService {
+		return t.runService(ctx, name, port)
 	}
 	return t.runAPIServer(ctx)
+}
+
+// runInstall deploys the persistent in-cluster tunnel and announces its URL.
+func (t *Tunnel) runInstall(ctx context.Context) error {
+	name, port, isService := parseTarget(t.target)
+	url, describe, origin, err := deployment.Install(ctx, t.restConfig, t.namespace, name, port, isService, t.log)
+	if err != nil {
+		return err
+	}
+	t.announce(ctx, describe, origin, url)
+	return nil
+}
+
+// runRemove deletes the persistent in-cluster tunnel.
+func (t *Tunnel) runRemove(ctx context.Context) error {
+	name, _, isService := parseTarget(t.target)
+	return deployment.Remove(ctx, t.restConfig, t.namespace, name, isService, t.log)
 }
 
 // runAPIServer tunnels straight to the current context's cluster URL. libtunnel
@@ -140,9 +212,10 @@ func (t *Tunnel) runAPIServer(ctx context.Context) error {
 	tun := libtunnel.New(libtunnel.Cloudflare()).
 		WithLogger(t.log).
 		WithContext(ctx).
+		WithInterceptor(apiserver.InterceptWatch()).
 		WithLocalURL(origin)
 
-	return t.serve(ctx, tun, "apiserver "+origin.Host, nil)
+	return t.serve(ctx, tun, "apiserver "+origin.Host, origin.String(), nil)
 }
 
 // runService tunnels to a Service through the API server's services/proxy
@@ -151,7 +224,7 @@ func (t *Tunnel) runAPIServer(ctx context.Context) error {
 // the API server against the cluster CA — and hands its loopback listener to
 // libtunnel. The proxy injects no credentials, so the caller needs the RBAC to
 // reach services/proxy.
-func (t *Tunnel) runService(ctx context.Context, name string) error {
+func (t *Tunnel) runService(ctx context.Context, name, port string) error {
 	target, err := url.Parse(t.restConfig.Host)
 	if err != nil {
 		return fmt.Errorf("parsing API server URL %q: %w", t.restConfig.Host, err)
@@ -161,7 +234,11 @@ func (t *Tunnel) runService(ctx context.Context, name string) error {
 		return err
 	}
 
-	pathPrefix := fmt.Sprintf("/api/v1/namespaces/%s/services/%s/proxy", t.namespace, name)
+	svc := name
+	if port != "" {
+		svc = name + ":" + port
+	}
+	pathPrefix := fmt.Sprintf("/api/v1/namespaces/%s/services/%s/proxy", t.namespace, svc)
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		// Stream responses as they arrive so watch/exec/log endpoints work.
@@ -191,13 +268,14 @@ func (t *Tunnel) runService(ctx context.Context, name string) error {
 	server := &http.Server{Handler: proxy}
 	go func() { _ = server.Serve(lis) }()
 
-	return t.serve(ctx, tun, fmt.Sprintf("service %s/%s", t.namespace, name), func() { _ = server.Close() })
+	targetURL := fmt.Sprintf("%s://%s%s", target.Scheme, target.Host, pathPrefix)
+	return t.serve(ctx, tun, fmt.Sprintf("service %s/%s", t.namespace, name), targetURL, func() { _ = server.Close() })
 }
 
 // serve waits for the tunnel to come up, prints its public URL, and blocks
 // until the context is canceled or the tunnel fails. onShutdown, if set, is
 // called on the way out (e.g. to close a listener-backed origin).
-func (t *Tunnel) serve(ctx context.Context, tun libtunnel.TunnelV1, describe string, onShutdown func()) error {
+func (t *Tunnel) serve(ctx context.Context, tun libtunnel.TunnelV1, describe, targetURL string, onShutdown func()) error {
 	t.log.Info("opening tunnel", "target", describe)
 	publicURL := tun.URL()
 	if publicURL == nil {
@@ -210,19 +288,24 @@ func (t *Tunnel) serve(ctx context.Context, tun libtunnel.TunnelV1, describe str
 		return ctx.Err()
 	}
 
-	t.log.Info("tunnel ready", "target", describe, "url", publicURL)
-	fmt.Fprintln(os.Stdout, publicURL)
+	cleanup := t.announce(ctx, describe, targetURL, publicURL.String())
 
+	shutdown := func() {
+		if onShutdown != nil {
+			onShutdown()
+		}
+		// The local tunnel's public URL dies with the process, so retire the
+		// kubeconfig context it added.
+		if cleanup != nil {
+			cleanup()
+		}
+	}
 	select {
 	case <-ctx.Done():
-		if onShutdown != nil {
-			onShutdown()
-		}
+		shutdown()
 		return nil
 	case <-tun.Done():
-		if onShutdown != nil {
-			onShutdown()
-		}
+		shutdown()
 		return tun.Err()
 	}
 }
@@ -262,9 +345,9 @@ func (t *Tunnel) transport() (*http.Transport, error) {
 
 // parseTarget resolves the positional argument into a target. Empty or
 // "kubernetes" (with or without a svc/ prefix) is the API server; anything else
-// is a Service of that name. Returns the bare service name and whether the
-// target is a Service.
-func parseTarget(target string) (name string, isService bool) {
+// is a Service, optionally with a ":port" suffix. Returns the bare service
+// name, the port ("" if none), and whether the target is a Service.
+func parseTarget(target string) (name, port string, isService bool) {
 	target = strings.TrimSpace(target)
 	for _, prefix := range []string{"svc/", "service/", "services/"} {
 		if rest, ok := strings.CutPrefix(target, prefix); ok {
@@ -273,11 +356,17 @@ func parseTarget(target string) (name string, isService bool) {
 		}
 	}
 	if target == "" || target == "kubernetes" {
-		return "", false
+		return "", "", false
 	}
-	return target, true
+	if i := strings.LastIndex(target, ":"); i >= 0 {
+		return target[:i], target[i+1:], true
+	}
+	return target, "", true
 }
 
+// interceptWatch is a libtunnel interceptor that logs each streaming
+// (?watch=true) request passing through the tunnel, then lets it proxy to the
+// origin unchanged (the returned ctx is the default origin handler).
 // singleJoiningSlash joins two URL path segments with exactly one slash.
 func singleJoiningSlash(a, b string) string {
 	aslash := strings.HasSuffix(a, "/")

@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
-	github.com/cnuss/libtunnel v0.0.29
+	github.com/cnuss/libtunnel v0.0.37
 	github.com/lmittmann/tint v1.2.0
 	github.com/reeflective/flags v0.11.1
 	github.com/sigstore/sigstore-go v1.2.2

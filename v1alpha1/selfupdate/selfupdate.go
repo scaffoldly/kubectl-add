@@ -68,6 +68,18 @@ func update(ctx context.Context, current, token string, client *http.Client, for
 	if err != nil {
 		return fmt.Errorf("this is not a release build (version %q); install a release to enable updates", current)
 	}
+	// A prerelease/dev build (a git-describe "v0.3.1-3-g<sha>-dirty", an -rc,
+	// etc.) is not a release: never auto-update it, and never let a "newer"
+	// release downgrade it — semver ranks a prerelease below its own release, so
+	// a plain version compare would replace a dev build with the last release.
+	if cur.Prerelease() != "" {
+		if force {
+			fmt.Fprintf(os.Stderr, "kubectl-add %s is a development build; not updating\n", current)
+		} else {
+			slog.Debug("skipping auto-update for development build", "version", current)
+		}
+		return nil
+	}
 
 	exe, err := resolveExe()
 	if err != nil {

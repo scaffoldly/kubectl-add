@@ -212,7 +212,7 @@ func (t *Tunnel) runAPIServer(ctx context.Context) error {
 	tun := libtunnel.New(libtunnel.Cloudflare()).
 		WithLogger(t.log).
 		WithContext(ctx).
-		WithInterceptor(apiserver.InterceptWatch()).
+		WithInterceptor(apiserver.InterceptWatch(t.log)).
 		WithLocalURL(origin)
 
 	return t.serve(ctx, tun, "apiserver "+origin.Host, origin.String(), nil)

@@ -10,9 +10,8 @@ package apiserver
 
 import (
 	"bytes"
-	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 
 	"github.com/cnuss/libtunnel"
 )
@@ -27,14 +26,14 @@ const watchListPad = 128 * 1024
 // its streaming buffer so events flush to the client instead of pooling. A
 // classic (change-feed) watch has no sendInitialEvents and is left to proxy
 // normally.
-func InterceptWatch() libtunnel.Interceptor {
+func InterceptWatch(log *slog.Logger) libtunnel.Interceptor {
 	return libtunnel.Interceptor{
 		Match: func(r *http.Request) bool {
 			q := r.URL.Query()
 			return q.Get("watch") == "true" && q.Get("sendInitialEvents") == "true"
 		},
 		Handler: func(ictx libtunnel.InterceptCtx) libtunnel.InterceptCtx {
-			fmt.Fprintf(os.Stderr, "interceptor fired (watchlist) path=%s\n", ictx.Request().URL.Path)
+			log.Debug("watchlist interceptor fired", "path", ictx.Request().URL.Path)
 			origin := ictx.Handler()
 			return ictx.WithHandler(func(w http.ResponseWriter, r *http.Request) {
 				origin(&padFlushWriter{ResponseWriter: w}, r)

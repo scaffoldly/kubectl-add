@@ -210,6 +210,13 @@ type tunnelCLI struct {
 
 	configFlags *genericclioptions.ConfigFlags
 	ctx         context.Context
+
+	// restConfig and namespace are the connection resolved once at Execute and
+	// stashed for the lifetime of the tunnel, so teardown (deleting the minted
+	// ServiceAccount + RBAC) always talks to the original cluster even if the
+	// current context or kubeconfig changed while the tunnel was up.
+	restConfig *rest.Config
+	namespace  string
 }
 
 // Execute opens the tunnel, resolving the connection and namespace from the
@@ -227,6 +234,10 @@ func (t *tunnelCLI) Execute(extra []string) error {
 	if err != nil {
 		return fmt.Errorf("resolving namespace: %w", err)
 	}
+	// Stash the resolved connection for the tunnel's lifetime; teardown uses it.
+	t.restConfig = config
+	t.namespace = namespace
+
 	tun := tunnel.New().
 		WithContext(t.ctx).
 		WithRESTConfig(config).
@@ -286,15 +297,14 @@ func (t *tunnelCLI) writeTunnelContext(ctx context.Context, publicURL string) (f
 	authInfoName := cur.AuthInfo
 	var credCleanup func()
 	if clientCertOnly(raw.AuthInfos[cur.AuthInfo]) {
-		config, err := t.configFlags.ToRESTConfig()
-		if err != nil {
-			return nil, fmt.Errorf("building REST config: %w", err)
-		}
-		ns, _, nerr := t.configFlags.ToRawKubeConfigLoader().Namespace()
-		if nerr != nil || ns == "" {
+		ns := t.namespace
+		if ns == "" {
 			ns = DefaultNamespace
 		}
-		ai, cleanup, err := auth.MintImpersonation(ctx, config, ns, publicURL)
+		// Mint against the stashed original connection; the returned cleanup
+		// captures that clientset, so teardown deletes the SA/RBAC over the
+		// original cluster regardless of later context/kubeconfig changes.
+		ai, cleanup, err := auth.MintImpersonation(ctx, t.restConfig, ns, publicURL)
 		if err != nil {
 			return nil, err
 		}
@@ -319,13 +329,20 @@ func (t *tunnelCLI) writeTunnelContext(ctx context.Context, publicURL string) (f
 	}
 	fmt.Fprintf(os.Stderr, "updated kubeconfig: switched to context %q\n", name)
 
-	// Reload before editing so a concurrent kubeconfig change is not clobbered.
+	// Teardown reverses out as much as possible, best-effort and independent:
+	// the ServiceAccount/RBAC deletion (over the stashed original connection)
+	// runs first and regardless of the kubeconfig edit; the kubeconfig is then
+	// reloaded fresh (so a concurrent edit is not clobbered), the tunnel's
+	// cluster/context/authInfo are deleted by name, and the previous
+	// current-context is restored only if the tunnel context is still selected —
+	// a manual switch the user made while the tunnel was up is left intact.
 	cleanup := func() {
 		if credCleanup != nil {
 			credCleanup()
 		}
 		fresh, err := loader.RawConfig()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not reload kubeconfig to remove context %q: %v\n", name, err)
 			return
 		}
 		delete(fresh.Clusters, name)
@@ -333,15 +350,19 @@ func (t *tunnelCLI) writeTunnelContext(ctx context.Context, publicURL string) (f
 		if authInfoName == name {
 			delete(fresh.AuthInfos, name)
 		}
-		// Restore the previous current-context if ours is still selected.
-		if fresh.CurrentContext == name {
+		restored := fresh.CurrentContext == name
+		if restored {
 			fresh.CurrentContext = prevContext
 		}
 		if err := clientcmd.ModifyConfig(loader.ConfigAccess(), fresh, true); err != nil {
 			fmt.Fprintf(os.Stderr, "could not remove kubeconfig context %q: %v\n", name, err)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "removed kubeconfig context %q, restored %q\n", name, prevContext)
+		if restored {
+			fmt.Fprintf(os.Stderr, "removed kubeconfig context %q, restored %q\n", name, prevContext)
+		} else {
+			fmt.Fprintf(os.Stderr, "removed kubeconfig context %q (current-context left as %q)\n", name, fresh.CurrentContext)
+		}
 	}
 	return cleanup, nil
 }

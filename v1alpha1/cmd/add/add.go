@@ -14,6 +14,8 @@ import (
 
 	"github.com/lmittmann/tint"
 	"github.com/reeflective/flags"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/cmd/add/tunnel"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/cmd/add/tunnel/auth"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/helm"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/httpclient"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/kustomize"
@@ -23,8 +25,6 @@ import (
 	resolvehttp "github.com/scaffoldly/kubectl-add/v1alpha1/resolve/http"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/resolve/image"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/selfupdate"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/auth"
 	"github.com/scaffoldly/kubectl-add/v1alpha1/version"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"

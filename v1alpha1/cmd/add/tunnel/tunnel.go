@@ -25,8 +25,8 @@ import (
 	"strings"
 
 	"github.com/cnuss/libtunnel"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/apiserver"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/deployment"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/cmd/add/tunnel/apiserver"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/cmd/add/tunnel/deployment"
 	"k8s.io/client-go/rest"
 )
 

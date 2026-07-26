@@ -63,6 +63,51 @@ func Update(ctx context.Context, current, token string, client *http.Client) err
 	return update(ctx, current, token, client, true)
 }
 
+// noticeTimeout bounds UpdateNotice's release check, so --version never hangs
+// on a slow or unreachable network.
+const noticeTimeout = 2 * time.Second
+
+// UpdateNotice returns a one-line "a newer release exists" message for --version
+// to print, or "" when there is nothing to say: the build is current, it is a
+// development build, the user opted out of update checks, or the check failed.
+// It is deliberately unthrottled (an explicit --version asks for a live answer)
+// but never stamps the auto-update throttle, so it neither suppresses nor
+// triggers the daily background check.
+func UpdateNotice(ctx context.Context, current, token string, client *http.Client) string {
+	if os.Getenv(envOptOut) != "" {
+		return ""
+	}
+	cur, err := semver.NewVersion(current)
+	if err != nil || cur.Prerelease() != "" {
+		// Not a release build: a plain version compare would advertise the last
+		// release as an "update" to a newer development build.
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, noticeTimeout)
+	defer cancel()
+
+	tag, err := latestTag(ctx, client, token)
+	if err != nil {
+		slog.Debug("update check skipped", "err", err)
+		return ""
+	}
+	latest, err := semver.NewVersion(strings.TrimPrefix(tag, "v"))
+	if err != nil || !latest.GreaterThan(cur) {
+		return ""
+	}
+
+	// Point at the command that actually updates this install: a package
+	// manager owns its own upgrades; everything else self-updates.
+	hint := "kubectl add --update"
+	if exe, err := resolveExe(); err == nil {
+		if manager, managed := managedInstall(exe); managed {
+			hint = upgradeCommand(manager)
+		}
+	}
+	return fmt.Sprintf("update available: %s (installed v%s) — run: %s", tag, cur.String(), hint)
+}
+
 func update(ctx context.Context, current, token string, client *http.Client, force bool) error {
 	cur, err := semver.NewVersion(current)
 	if err != nil {

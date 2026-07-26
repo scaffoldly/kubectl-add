@@ -19,3 +19,9 @@ func AutoUpdate(ctx context.Context, current, token string, client *http.Client)
 func Update(ctx context.Context, current, token string, client *http.Client) error {
 	return fmt.Errorf("self-update is disabled in this build; update via your package manager")
 }
+
+// UpdateNotice says nothing in noselfupdate builds: the package manager that
+// owns this install reports its own updates.
+func UpdateNotice(ctx context.Context, current, token string, client *http.Client) string {
+	return ""
+}

@@ -25,8 +25,8 @@ import (
 	"strings"
 
 	"github.com/cnuss/libtunnel"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/apiserver"
-	"github.com/scaffoldly/kubectl-add/v1alpha1/tunnel/deployment"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/cmd/add/tunnel/apiserver"
+	"github.com/scaffoldly/kubectl-add/v1alpha1/cmd/add/tunnel/deployment"
 	"k8s.io/client-go/rest"
 )
 
@@ -212,7 +212,7 @@ func (t *Tunnel) runAPIServer(ctx context.Context) error {
 	tun := libtunnel.New(libtunnel.Cloudflare()).
 		WithLogger(t.log).
 		WithContext(ctx).
-		WithInterceptor(apiserver.InterceptWatch()).
+		WithInterceptor(apiserver.InterceptWatch(t.log)).
 		WithLocalURL(origin)
 
 	return t.serve(ctx, tun, "apiserver "+origin.Host, origin.String(), nil)
